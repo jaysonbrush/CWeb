@@ -32,7 +32,7 @@ function Confirm-CWeb($question) {
     try { $a = Read-Host "$question [y/N]" } catch { return $false }   # no console to ask on: treat as no
     return $a -match '^(y|yes)$'
 }
-function Git { & git -C $root @args 2>&1; if ($LASTEXITCODE) { throw "git $($args -join ' ') failed (exit $LASTEXITCODE)." } }
+function Invoke-Git { & git.exe -C $root @args 2>&1; if ($LASTEXITCODE) { throw "git $($args -join ' ') failed (exit $LASTEXITCODE)." } }
 
 function Get-RunningInstances {
     # Instances of this machine whose server answers, with what the user should know before they're stopped.
@@ -87,19 +87,19 @@ Say "  Folder: $root"
 # ================================ Is there a new version? ================================
 Step 'Checking for a new version'
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) { throw 'git is not installed. Install it (winget install --id Git.Git), or download the new CWeb and run Setup-CWeb.cmd.' }
-& git -C $root rev-parse --is-inside-work-tree *> $null
+& git.exe -C $root rev-parse --is-inside-work-tree *> $null
 if ($LASTEXITCODE) { throw "$root isn't a git clone, so it can't update itself. Download the new CWeb into this folder and run Setup-CWeb.cmd." }
-$changed = @(Git status --porcelain --untracked-files=no)
+$changed = @(Invoke-Git status --porcelain --untracked-files=no)
 if ($changed.Count) {
     throw "CWeb files in $root were changed here, so pulling could overwrite them:`n  $($changed -join "`n  ")`nKeep or undo those changes (git stash / git checkout), then run this again. Nothing was stopped."
 }
-Git fetch --quiet | Out-Null
-$branch = (Git rev-parse --abbrev-ref HEAD | Select-Object -First 1)
-$upstream = & git -C $root rev-parse --abbrev-ref '@{u}' 2>$null
+Invoke-Git fetch --quiet | Out-Null
+$branch = (Invoke-Git rev-parse --abbrev-ref HEAD | Select-Object -First 1)
+$upstream = & git.exe -C $root rev-parse --abbrev-ref '@{u}' 2>$null
 if ($LASTEXITCODE -or -not $upstream) { throw "Branch '$branch' doesn't track a remote branch, so there's nothing to pull from." }
-$behind = [int](Git rev-list --count "HEAD..@{u}" | Select-Object -First 1)
+$behind = [int](Invoke-Git rev-list --count "HEAD..@{u}" | Select-Object -First 1)
 if ($behind -eq 0) { Say '  Already up to date. Nothing was stopped.' Green; exit 0 }
-$remoteVersion = try { (Git show "@{u}:VERSION" | Select-Object -First 1).Trim() } catch { '?' }
+$remoteVersion = try { (Invoke-Git show "@{u}:VERSION" | Select-Object -First 1).Trim() } catch { '?' }
 Say "  New version $remoteVersion on $upstream ($behind commit(s))."
 
 # ================================ Stop the running instances ================================
@@ -127,7 +127,7 @@ if ($running.Count) {
 # ================================ Pull ================================
 Step "Pulling $remoteVersion"
 try {
-    Git pull --ff-only --quiet | ForEach-Object { "  $_" }
+    Invoke-Git pull --ff-only --quiet | ForEach-Object { "  $_" }
 } catch {
     Say "  $($_.Exception.Message) CWeb is unchanged." Red
     Start-Instances $running

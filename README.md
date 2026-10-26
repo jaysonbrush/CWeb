@@ -10,13 +10,13 @@ Agents: read [`claude.md`](claude.md); it also holds the version history.
 Needs 64-bit Windows 10/11 and PowerShell 7 (`winget install --id Microsoft.PowerShell --source winget`).
 
 ```powershell
-git clone <CWeb repo> C:\CWeb
-C:\CWeb\Setup-CWeb.cmd
+git clone https://github.com/jaysonbrush/CWeb.git    # into any folder
+.\CWeb\Setup-CWeb.cmd
 ```
 
 Setup downloads the pinned Chrome for Testing, ChromeDriver and Selenium (the versions in `browser\version.json`, the
 same on every machine), creates the data folder and checks itself. Run it again any time; it only fixes what's
-missing. The examples use `C:\CWeb`; CWeb runs from any folder, and setup prints the exact paths for your machine.
+missing. CWeb runs from any folder (yours, Downloads, anywhere); setup prints the paths for your machine and installs the **cweb** Claude skill with them, so agents find it on their own.
 
 - **Where your data lives:** one folder outside the repo, `%USERPROFILE%\CWebData` (profiles and sign-ins, agent keys,
   logs, instances you added). `Setup-CWeb.ps1 -DataRoot D:\CWebData` moves it. Never inside the repo, so git can't
@@ -27,7 +27,7 @@ missing. The examples use `C:\CWeb`; CWeb runs from any folder, and setup prints
 
 ## Update
 
-Double-click `Update-CWeb.cmd` (or run `C:\CWeb\Update-CWeb.cmd`). It:
+Double-click `Update-CWeb.cmd` in the CWeb folder. It:
 
 1. Checks for a new version. If there's none, it stops nothing and exits.
 2. Lists the running instances and the agents working in them, and **asks before stopping them**: stopping closes
@@ -72,9 +72,8 @@ change a tab another agent opened.
 
 ## Staying signed in
 
-CWeb ships with no site profiles. To stay signed in to a site,
-click **Keep alive** on its tab, then ask an agent to *"work the CWeb keep-alive requests"*. It writes a profile as a
-**draft**; nothing runs until you click **Enable** on the Keep-alive tab.
+To stay signed in to a site, click **Keep alive** on its tab, then ask an agent to *"work the CWeb keep-alive
+requests"*. It writes a profile as a **draft**; nothing runs until you click **Enable** on the Keep-alive tab.
 
 ## Instances
 
@@ -104,11 +103,11 @@ Details: the **Settings** section of [`claude.md`](claude.md).
 
 ## Security
 
-- Only this machine can reach CWeb; websites can't drive it or read anything from it.
+- Only the local machine can reach CWeb; websites can't drive it or read anything from it.
 - Every agent needs your approval; each gets its own key, stored by CWeb only as a fingerprint. Keys never go into
   git, docs, chat or logs.
-- Agents never type passwords. You sign in yourself.
 
 ## Files
 
-See the **Files and data** section of [`claude.md`](claude.md). A Claude skill for agents is in `skills\cweb\` (copy that folder into a Claude skills folder).
+See the **Files and data** section of [`claude.md`](claude.md). The Claude skill for agents (`skills\cweb\`) is installed by
+setup into `%USERPROFILE%\.claude\skills\cweb\`, with this machine's CWeb folder filled in.

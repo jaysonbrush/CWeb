@@ -4,13 +4,15 @@ CWeb is a REST server that drives a real Chrome window. The user signs in to sit
 read and script there through the API. Many agent sessions share one browser safely: each works in its own tab,
 tabs an agent opens are its own, and nothing gets in without the user approving it on the status page.
 
-> **Location:** the examples use `C:\CWeb`. CWeb runs from any folder; `Setup-CWeb` prints the exact paths for your machine.
+> **Location:** CWeb runs from any folder. In the examples, `<CWeb>` is that folder (`C:\Tools\CWeb`) and `$CWEB` the same in
+> Bash form (`/c/Tools/CWeb`). The **cweb** skill that setup installs has the real path; setup also prints it.
+> Agents: put the real path in each command (`/c/Tools/CWeb/cweb.sh ...`); a variable set in one Bash call is gone in the next.
 
 ## Set up on a machine
 
 ```powershell
-git clone <CWeb repo> C:\CWeb
-C:\CWeb\Setup-CWeb.cmd          # or: pwsh -File C:\CWeb\Setup-CWeb.ps1
+git clone https://github.com/jaysonbrush/CWeb.git <CWeb>    # any folder
+<CWeb>\Setup-CWeb.cmd          # or: pwsh -File <CWeb>\Setup-CWeb.ps1
 ```
 
 `Setup-CWeb.ps1` checks PowerShell 7, installs the **pinned** Chrome for Testing, ChromeDriver and Selenium versions
@@ -41,7 +43,7 @@ Use the same name every session; that's what lets you reconnect without asking t
 
 ```bash
 # 1. Connect (once per session; safe to repeat). Starts the instance if it's down.
-/c/CWeb/cweb.sh work support-ticket-triage connect
+$CWEB/cweb.sh work support-ticket-triage connect
 ```
 
 - `"status":"connected"` (exit 0): go ahead.
@@ -52,10 +54,10 @@ Use the same name every session; that's what lets you reconnect without asking t
 
 ```bash
 # 2. Work. One JSON command per call; the reply is JSON.
-/c/CWeb/cweb.sh work support-ticket-triage '{"action":"newtab","name":"tickets","url":"https://example.org"}'
-/c/CWeb/cweb.sh work support-ticket-triage '{"action":"getpagetext"}'
+$CWEB/cweb.sh work support-ticket-triage '{"action":"newtab","name":"tickets","url":"https://example.org"}'
+$CWEB/cweb.sh work support-ticket-triage '{"action":"getpagetext"}'
 # Long bodies (scripts with quotes): send on stdin.
-cat body.json | /c/CWeb/cweb.sh work support-ticket-triage -
+cat body.json | $CWEB/cweb.sh work support-ticket-triage -
 ```
 
 Exit codes: 0 ok (check `success` in the reply), 3 waiting, 4 denied, **5 not connected or key revoked: run
@@ -65,7 +67,7 @@ curl privately; you never see or handle it.
 From PowerShell scripts:
 
 ```powershell
-. C:\CWeb\CWeb-Client.ps1
+. <CWeb>\CWeb-Client.ps1
 Connect-CWeb -Instance work -Client support-ticket-triage          # returns status connected|waiting|denied|error
 Invoke-CWeb  -Instance work -Client support-ticket-triage @{ action = 'gettitle' }
 ```
@@ -258,7 +260,7 @@ credentials, no customer data.
 
 ## Starting, stopping, restarting
 
-- **Start:** `Start-CWeb.cmd <instance>` (from Bash: `cmd.exe //c start "" "C:\\CWeb\\Start-CWeb.cmd" work`),
+- **Start:** `Start-CWeb.cmd <instance>` (from Bash: `cmd.exe //c start "" "$(cygpath -w "$CWEB")\\Start-CWeb.cmd" work`),
   the status page's **Start** button, or `cweb.sh <instance> <client> connect`. Safe to repeat: one server per
   instance (a named lock); a second one exits.
 - **Stop:** the status page's **Stop server** (closes Chrome cleanly, logins kept). From a script:
@@ -288,7 +290,7 @@ In this folder (the repo):
 | `status.html` | The status page |
 | `KEEPALIVE.md` | How agents work keep-alive requests and write site profiles |
 | `browser\` | Core browser module: `Browser-Functions.ps1`, `Update-Browser.ps1`; Chrome for Testing, ChromeDriver, Selenium (not in git; see `browser\CLAUDE.md`) |
-| `skills\cweb\SKILL.md` | Claude skill for agents using CWeb: copy the `cweb` folder into a Claude skills folder (e.g. `%USERPROFILE%\.claude\skills\`) |
+| `skills\cweb\SKILL.md` | Claude skill for agents using CWeb, as a template: setup installs it into `%USERPROFILE%\.claude\skills\cweb\` with `{{CWEB}}` / `{{CWEB_WIN}}` replaced by this folder's path (again on every setup or update, so it follows the folder if it moves) |
 | `VERSION` | The version (history at the end of this file) |
 
 Everything CWeb stores on a machine is in **one data folder outside the repo**: `%USERPROFILE%\CWebData`, or the folder
@@ -332,7 +334,7 @@ CWeb writes nothing outside the data folder and the repo's `browser\` downloads.
   (default on) patches a few more tells. No CAPTCHA solving: the user handles those.
 - **Window title:** `CWeb <label>`, so instances are easy to tell apart.
 - **Network drive:** run from a mapped/UNC path, Chrome starts with `--no-sandbox` (it crashes otherwise).
-- **Another machine:** clone to `C:\CWeb` and run `Setup-CWeb.cmd` (see **Set up on a machine**).
+- **Another machine:** clone to any folder and run `Setup-CWeb.cmd` (see **Set up on a machine**).
   Chrome, ChromeDriver and Selenium aren't in git; setup downloads the pinned versions and unblocks the files.
 
 ## Troubleshooting
@@ -356,7 +358,7 @@ CWeb writes nothing outside the data folder and the repo's `browser\` downloads.
 
 | Version | Changes |
 |---|---|
-| 2026.10.26.016 | `Update-CWeb.cmd`: asks before stopping running instances (`-Yes` to skip), stops them cleanly, pulls, runs setup, restarts what was running. README **Update** section. |
+| 2026.10.26.016 | `Update-CWeb.cmd`: asks before stopping running instances (`-Yes` to skip), stops them cleanly, pulls, runs setup, restarts what was running. README **Update** section. Location-agnostic: setup installs the cweb skill with this machine's CWeb folder filled in (`-Uninstall` removes it), and the docs no longer assume `C:\CWeb`. |
 | 2026.10.26.015 | Data folder default moved from `%LOCALAPPDATA%\CWeb` to `%USERPROFILE%\CWebData`: the Claude desktop app (MSIX) redirects AppData, so agents and the server saw different folders. Old folder still used until `Setup-CWeb.cmd` moves it. |
 | 2026.10.26.014 | Settings file `<data folder>\config.json`: custom port per instance, `portFallback` (next free port when one is taken), `firstPort`. Clients find a moved server through `server.json`. Setup's location note fixed. |
 | 2026.10.26.013 | First public release. |

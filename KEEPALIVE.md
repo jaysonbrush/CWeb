@@ -5,13 +5,14 @@ for the site's address. Your job: work out how that site's session expires and w
 **as a draft**. A draft never runs until the user reviews it and clicks **Enable**.
 
 Use `cweb.sh` (or `Invoke-CWeb`) as an approved client of the instance the request is on. Examples use `work` and the
-client name `keepalive-builder`.
+client name `keepalive-builder`; `$CWEB` stands for the CWeb folder in Bash form (the **cweb** skill has the real
+path), so write the real path in each command.
 
 ## 1. See what's asked
 
 ```bash
-/c/CWeb/cweb.sh work keepalive-builder connect
-/c/CWeb/cweb.sh work keepalive-builder '{"action":"keepalive","op":"requests"}'
+$CWEB/cweb.sh work keepalive-builder connect
+$CWEB/cweb.sh work keepalive-builder '{"action":"keepalive","op":"requests"}'
 ```
 
 Each open request has an `id` and a `site` (e.g. `https://portal.example.org`). Find the tab the user is signed in on:
@@ -36,7 +37,7 @@ You need two things:
 If you can't find a safe, read-only probe or a renewal that's proven to work, don't guess. Decline with a note:
 
 ```bash
-/c/CWeb/cweb.sh work keepalive-builder '{"action":"keepalive","op":"decline","request":"<id>","note":"No client-side timer; session is a server cookie with no keep-alive endpoint."}'
+$CWEB/cweb.sh work keepalive-builder '{"action":"keepalive","op":"decline","request":"<id>","note":"No client-side timer; session is a server cookie with no keep-alive endpoint."}'
 ```
 
 ## 3. Write the profile
@@ -68,7 +69,7 @@ Put the source in a JSON body file (quotes and newlines survive) and send it on 
 
 ```bash
 pwsh -NoProfile -Command '@{ action="keepalive"; op="draft"; name="example-portal"; request="<id>"; source=(Get-Content -Raw ./example-portal.js) } | ConvertTo-Json -Compress' |
-  /c/CWeb/cweb.sh work keepalive-builder -
+  $CWEB/cweb.sh work keepalive-builder -
 ```
 
 The server checks the headers and saves it to `<data folder>\keepalive\drafts\example-portal.js`. The request shows **draft

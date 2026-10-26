@@ -144,7 +144,7 @@ Chrome-Stop -Browser $browser
 ## Example: Login Automation
 
 ```powershell
-. "C:\CWeb\browser\Browser-Functions.ps1"
+. "<CWeb>\browser\Browser-Functions.ps1"
 
 $browser = Chrome-Start -Hidden $true
 
@@ -175,7 +175,7 @@ try {
 ## File Structure
 
 ```
-C:\CWeb\browser\
+<CWeb>\browser\
 ├── Browser-Functions.ps1    # Main library (load this)
 ├── Update-Browser.ps1       # Update Chrome/ChromeDriver/Selenium
 ├── Test-Browser.ps1         # Quick test script

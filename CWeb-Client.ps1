@@ -1,6 +1,6 @@
 # CWeb-Client.ps1 -- how agents and scripts connect to a CWeb instance (PowerShell 7).
 #
-#   . C:\CWeb\CWeb-Client.ps1
+#   . <CWeb folder>\CWeb-Client.ps1
 #   Connect-CWeb -Instance work -Client support-ticket-triage      # once per session; safe to repeat
 #   Invoke-CWeb  -Instance work -Client support-ticket-triage @{ action = 'navigate'; url = 'https://example.org' }
 #

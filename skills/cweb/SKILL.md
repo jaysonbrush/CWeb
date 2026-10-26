@@ -5,10 +5,13 @@ allowed-tools: Bash, Read, Write
 user-invocable: true
 ---
 
+<!-- Template for the cweb skill: installed by CWeb setup into ~/.claude/skills/cweb/ with the CWeb folder filled in
+     ({{CWEB_WIN}}\skills\cweb\SKILL.md). Edit the template; setup replaces the installed copy. -->
+
 # CWeb
 
 CWeb is a REST server that drives a real Chrome window the user signs in to. Several agents share it; each works in its
-own tab. Full reference: `C:\CWeb\claude.md`. Read it before anything beyond the basics below.
+own tab. Full reference: `{{CWEB_WIN}}\claude.md`. Read it before anything beyond the basics below.
 If `cweb.sh` or Chrome is missing on this machine, CWeb isn't set up: ask the user (setup is `Setup-CWeb.cmd`).
 
 ## 1. Connect
@@ -16,7 +19,7 @@ If `cweb.sh` or Chrome is missing on this machine, CWeb isn't set up: ask the us
 Pick a client name (`<team>-<role>`, lowercase, e.g. `support-ticket-triage`) and keep it across sessions.
 
 ```bash
-/c/CWeb/cweb.sh work support-ticket-triage connect
+{{CWEB}}/cweb.sh work support-ticket-triage connect
 ```
 
 - `connected`: carry on.
@@ -28,7 +31,7 @@ It starts the instance if it isn't running. Never start the server yourself.
 ## 2. Work in your own tab
 
 ```bash
-cweb=/c/CWeb/cweb.sh
+cweb={{CWEB}}/cweb.sh
 $cweb work support-ticket-triage '{"action":"newtab","name":"tickets","url":"https://example.org"}'
 $cweb work support-ticket-triage '{"action":"getpagetext"}'
 $cweb work support-ticket-triage '{"action":"click","by":"CssSelector","value":"button[type=submit]"}'
@@ -47,7 +50,7 @@ pwsh -NoProfile -Command '@{ action = "executescript"; script = @"
 var rows = [];
 document.querySelectorAll("table tr").forEach(function (tr) { rows.push(tr.innerText); });
 return rows;
-"@ } | ConvertTo-Json -Compress' | /c/CWeb/cweb.sh work support-ticket-triage -
+"@ } | ConvertTo-Json -Compress' | {{CWEB}}/cweb.sh work support-ticket-triage -
 ```
 
 `executescript` returns whatever the script `return`s, in `result`.

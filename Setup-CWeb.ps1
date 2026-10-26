@@ -6,6 +6,8 @@
 .DESCRIPTION
     - Installs the exact Chrome for Testing, ChromeDriver and Selenium versions pinned in browser\version.json, so
       every machine runs the same tested versions. Skips what's already right; safe to run again.
+    - Installs the cweb Claude skill (%USERPROFILE%\.claude\skills\cweb) with this folder's path, so agents find CWeb
+      wherever it lives.
     - Creates the data folder (default %USERPROFILE%\CWebData): profiles, keys, logs and this machine's own instances
       live there, never in the repo folder. An older install's %LOCALAPPDATA%\CWeb is moved there.
     - Checks itself: Test-CWeb, then a short headless start and stop of the 'test' instance.
@@ -58,10 +60,7 @@ function Test-SafeDataRoot {
 
 Say "CWeb setup -- $(try { (Get-Content (Join-Path $root 'VERSION') -Raw).Trim() } catch { '?' }) -- $env:COMPUTERNAME" White
 Say "  Folder: $root"
-$standard = 'C:\CWeb'   # the path the docs and the cweb skill use
-if ($root.TrimEnd('\') -ne $standard) {
-    Say "  Note: the docs and the cweb skill use $standard. CWeb works from here too; tell agents the cweb.sh path printed at the end." Yellow
-}
+$bashRoot = ($root.TrimEnd('\') -replace '^([A-Za-z]):', { '/' + $_.Groups[1].Value.ToLower() }) -replace '\\', '/'   # for Git Bash
 
 # Windows marks downloaded or cloned-from-zip files as blocked; unblock ours before running any of them.
 Get-ChildItem $root -Recurse -File -Include *.ps1, *.psm1, *.cmd, *.sh, *.dll, *.exe -ErrorAction SilentlyContinue | Unblock-File -ErrorAction SilentlyContinue
@@ -79,6 +78,9 @@ if ($Uninstall) {
     } else { Say "  Data folder ${dataRoot}: not there" }
     if ($userVar) { Say "  User environment variable CWEB_DATA = $userVar" }
     foreach ($b in $bins) { Say "  Downloaded: $b ($(Get-SizeMB $b) MB)" }
+    $skillDir = Join-Path $env:USERPROFILE '.claude\skills\cweb'
+    $skillOurs = (Test-Path "$skillDir\SKILL.md") -and ((Get-Content "$skillDir\SKILL.md" -Raw) -match 'installed by CWeb setup')
+    if ($skillOurs) { Say "  Claude skill: $skillDir" }
     Say ''
     Say '  Not touched: this CWeb folder itself (delete it yourself, or keep it for git).' DarkGray
 
@@ -95,6 +97,7 @@ if ($Uninstall) {
     if (Test-Path $dataRoot) { Remove-Item -LiteralPath $dataRoot -Recurse -Force; Say "  Removed $dataRoot" }
     if ($userVar) { [Environment]::SetEnvironmentVariable('CWEB_DATA', $null, 'User'); Say '  Removed CWEB_DATA' }
     foreach ($b in $bins) { Remove-Item -LiteralPath $b -Recurse -Force; Say "  Removed $b" }
+    if ($skillOurs) { Remove-Item -LiteralPath "$skillDir\SKILL.md" -Force; if (-not (Get-ChildItem $skillDir -Force)) { Remove-Item -LiteralPath $skillDir -Force }; Say "  Removed $skillDir" }
     Say ''; Say "Done. To remove CWeb completely, delete $root." Green
     exit 0
 }
@@ -150,6 +153,26 @@ if (-not (Test-Path $configPath)) {
 } else {
     $null = Get-CWebConfig   # throws if it doesn't parse
     Say "  Settings: $configPath"
+}
+
+# ================================ Claude skill ================================
+# How agents find CWeb wherever this folder is: the cweb skill, with this folder's path filled in. Rewritten on every
+# setup (and so every update), so it follows the folder if it moves.
+Step 'Claude skill'
+$claudeDir = Join-Path $env:USERPROFILE '.claude'
+if (Test-Path $claudeDir) {
+    $skillDest = Join-Path $claudeDir 'skills\cweb\SKILL.md'
+    $skill = (Get-Content (Join-Path $root 'skills\cweb\SKILL.md') -Raw).Replace('{{CWEB_WIN}}', $root.TrimEnd('\')).Replace('{{CWEB}}', $bashRoot)
+    New-Item -ItemType Directory -Path (Split-Path $skillDest -Parent) -Force | Out-Null
+    if ((Test-Path $skillDest) -and (Get-Content $skillDest -Raw) -ne $skill -and (Get-Content $skillDest -Raw) -notmatch 'installed by CWeb setup') {
+        $bak = "$skillDest.bak-$(Get-Date -Format yyyyMMdd-HHmmss)"   # a copy made by hand, maybe edited: keep it
+        Copy-Item -LiteralPath $skillDest -Destination $bak
+        Say "  Kept the existing skill as $bak" Yellow
+    }
+    Set-Content -LiteralPath $skillDest -Value $skill -NoNewline -Encoding utf8
+    Say "  $skillDest  (CWeb folder: $root)"
+} else {
+    Say "  No $claudeDir here (Claude Code not used on this machine?). Agents need the CWeb folder: $bashRoot" Yellow
 }
 
 # ================================ Chrome, ChromeDriver, Selenium ================================
@@ -214,5 +237,5 @@ $work = Get-CWebInstance -Name 'work' -Root $root
 Say "  Start an instance:  Start-CWeb.cmd   (or: Start-CWeb.cmd <name>)" White
 Say "  Status page:        http://127.0.0.1:$($work.Port)/status   (work)" White
 Say "  Settings:           $configPath   (custom ports: see claude.md, Settings)" White
-Say "  Agents connect with: $($root -replace '^([A-Za-z]):', { '/' + $_.Groups[1].Value.ToLower() } -replace '\\', '/')/cweb.sh <instance> <client-name> connect" White
+Say "  Agents connect with: $bashRoot/cweb.sh <instance> <client-name> connect" White
 Say "  Data folder:        $current" White
