@@ -4,8 +4,8 @@ CWeb is a REST server that drives a real Chrome window. The user signs in to sit
 read and script there through the API. Many agent sessions share one browser safely: each works in its own tab,
 tabs an agent opens are its own, and nothing gets in without the user approving it on the status page.
 
-> **Location:** CWeb runs from any folder. In the examples, `<CWeb>` is that folder (`C:\Tools\CWeb`) and `$CWEB` the same in
-> Bash form (`/c/Tools/CWeb`). The **cweb** skill that setup installs has the real path; setup also prints it.
+> **Location:** CWeb runs from any folder. In the examples, `<CWeb>` is that folder (e.g. `C:\Tools\CWeb`) and `$CWEB` the same
+> in Bash form (`/c/Tools/CWeb`). The **cweb** skill that setup installs has the real path; setup also prints it.
 > Agents: put the real path in each command (`/c/Tools/CWeb/cweb.sh ...`); a variable set in one Bash call is gone in the next.
 
 ## Set up on a machine
