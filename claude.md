@@ -379,6 +379,7 @@ CWeb writes nothing outside the data folder and the repo's `browser\` downloads.
 
 | Version | Changes |
 |---|---|
+| 2026.10.26.019 | Keep-alive install messages name the tab once (they said `tab tab x`). |
 | 2026.10.26.018 | Access: sessions of one client no longer push each other out (a session whose request another session collected uses the saved key instead of asking again; a re-approval adds a key instead of replacing one; a bad key is only removed if no session saved a newer one). Keep-alive: agents hear about requests in the `connect` reply and install profiles with `op: install`, live at once after one `probe()` on the site's tab (no draft review; `op: draft` installs too). Shorter `KEEPALIVE.md`. |
 | 2026.10.26.017 | **Delete** for instances on the status page (asks first, stops it, keeps its profile as a leftover). Agents attach only to the running instance: `cweb.sh <client> connect` picks it (exit 6 `choose` when several run), and `connect` never starts or creates one. Status-page actions now need the page's own `Origin`. `Invoke-CWeb` needs `-Instance`. |
 | 2026.10.26.016 | `Update-CWeb.cmd`: asks before stopping running instances (`-Yes` to skip), stops them cleanly, pulls, runs setup, restarts what was running. README **Update** section. Location-agnostic: setup installs the cweb skill with this machine's CWeb folder filled in (`-Uninstall` removes it), and the docs no longer assume `C:\CWeb`. |

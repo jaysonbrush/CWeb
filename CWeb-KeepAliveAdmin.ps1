@@ -137,13 +137,13 @@ function Install-KeepAliveProfile {
             $d.SwitchTo().Window($tab.Key) | Out-Null
             $check = Invoke-KeepAliveSite -Site ([pscustomobject]@{ Source = $Source }) -Call probe
         } catch {
-            return @{ success = $false; error = "probe() failed on tab '$checkedOn': $($_.Exception.Message). Not installed." }
+            return @{ success = $false; error = "probe() failed on ${checkedOn}: $($_.Exception.Message). Not installed." }
         } finally {
             if ($back) { try { $d.SwitchTo().Window($back) | Out-Null } catch { } }
             $script:SwitchStamp++   # the driver moved; callers' tabs are re-entered before their next command
         }
         $ok = $check -and ($check.loggedOut -eq $true -or ($check.loggedOut -eq $false -and $check.remaining -is [ValueType]))
-        if (-not $ok) { return @{ success = $false; error = "probe() on tab '$checkedOn' returned $($check | ConvertTo-Json -Compress -Depth 3); it must return { loggedOut: true } or { loggedOut: false, remaining: <seconds> }. Not installed." } }
+        if (-not $ok) { return @{ success = $false; error = "probe() on $checkedOn returned $($check | ConvertTo-Json -Compress -Depth 3); it must return { loggedOut: true } or { loggedOut: false, remaining: <seconds> }. Not installed." } }
     }
 
     New-Item -ItemType Directory -Path $script:KeepAlive.SiteDir -Force | Out-Null
@@ -162,7 +162,7 @@ function Install-KeepAliveProfile {
     Write-KeepAliveLog "profile '$Name' ($($meta.name)) installed by $Client and live$(if ($replaced) { ' (replaced the old one)' })$(if ($checkedOn) { "; probe on $checkedOn ok" })" Green
     return @{
         success = $true; installed = $Name; live = $true; replaced = $replaced; checkedOn = $checkedOn; probe = $check
-        message = $(if ($checkedOn) { "Live now. probe() on '$checkedOn' returned $($check | ConvertTo-Json -Compress)." } else { 'Live now. No tab of this site is open, so probe() was not tried yet; it runs when one opens.' }) +
+        message = $(if ($checkedOn) { "Live now. probe() on $checkedOn returned $($check | ConvertTo-Json -Compress)." } else { 'Live now. No tab of this site is open, so probe() was not tried yet; it runs when one opens.' }) +
             ' The user can switch it off on the status page (Keep-alive tab).'
     }
 }
