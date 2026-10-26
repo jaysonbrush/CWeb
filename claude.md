@@ -31,8 +31,8 @@ itself (a short headless start of the `test` instance). Safe to run again; it sk
 - Sign-ins can't be copied between machines (Chrome ties them to the Windows user on that machine): sign in once per
   machine, per instance.
 
-**Rules:** never type a password or a one-time code (the user signs in themselves); never write your own page-refresh loop
-(the keep-alive does that properly); never put a key in a file, message or log.
+**Rules:** never write your own page-refresh loop (the keep-alive does that properly); never put a key in a file,
+message or log.
 
 ---
 
@@ -220,7 +220,7 @@ sessions don't time out while you work elsewhere. On by default; nothing to star
   counts; the next probe sees it.
 - A check switches to the tab (it comes to the front for a moment), then back. Your tab and iframe are restored before
   your next command.
-- Signed-out tabs are reported once (status page, server log). The user signs in again; you never type passwords.
+- Signed-out tabs are reported once (status page, server log).
 - **Per instance on/off:** the user can switch a site off for one instance on the status page; its tabs are then
   recognised but never probed or renewed.
 

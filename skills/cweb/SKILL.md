@@ -57,7 +57,6 @@ return rows;
 
 ## Rules
 
-- Never type passwords or one-time codes. The user signs in themselves.
 - Never write a refresh loop; the keep-alive keeps sessions alive.
 - Keep waits short (`timeout` of a few seconds, then retry): every other agent waits while yours runs.
 - Never print or save a key.
