@@ -67,6 +67,8 @@ function Get-CWebInstanceTable {
             foreach ($f in $p.Value.PSObject.Properties) { $table[$p.Name] | Add-Member -NotePropertyName $f.Name -NotePropertyValue $f.Value -Force }
         }
     }
+    # Deleted on the status page ("removed": true in config.json; how a default instance is deleted).
+    foreach ($name in @($table.Keys)) { if ($table[$name].removed -eq $true) { $table.Remove($name) } }
     # Ports must be unique.
     $ports = @{}
     foreach ($name in $table.Keys) {
@@ -197,12 +199,13 @@ function New-CWebInstance {
     if (-not $Label) { $Label = (Get-Culture).TextInfo.ToTitleCase($Name) }
     if ($Label.Length -gt 30 -or $Label -match '[\x00-\x1f]') { throw 'Label: up to 30 characters.' }
 
-    $lock = [System.Threading.Mutex]::new($false, 'Local\CWeb-instances-json')
-    try { $got = $lock.WaitOne(10000) } catch [System.Threading.AbandonedMutexException] { $got = $true }
-    if (-not $got) { $lock.Dispose(); throw 'instances.json is busy; try again.' }
+    $lock = Enter-CWebInstanceLock
     try {
         $all = Get-CWebInstanceTable -Root $Root
         if ($all.Contains($Name)) { throw "There's already an instance named '$Name'." }
+        # A deleted default instance (or one Restore brings back) only needs its "removed" mark cleared.
+        $wasRemoved = Clear-CWebRemovedMark -Name $Name
+        if ($wasRemoved -and (Get-CWebInstanceTable -Root $Root).Contains($Name)) { return Get-CWebInstance -Name $Name -Root $Root }
         $used = @($all.Values | ForEach-Object { [int]$_.port })
         $dataRoot = Get-CWebDataRoot
         New-Item -ItemType Directory -Path $dataRoot -Force | Out-Null
@@ -211,25 +214,91 @@ function New-CWebInstance {
         $port = (Get-CWebConfig).FirstPort
         while ($port -le 65535 -and ($port -in $used -or -not (Test-CWebPortFree $port))) { $port++ }
         if ($port -gt 65535) { throw 'No free port.' }
-
-        # Write it back one instance per line, the way the file is laid out by hand.
-        $list | Add-Member -NotePropertyName $Name -NotePropertyValue ([pscustomobject][ordered]@{ port = $port; label = $Label })
-        $props = @($list.PSObject.Properties)
-        $width = ($props | ForEach-Object { $_.Name.Length } | Measure-Object -Maximum).Maximum + 3
-        $lines = for ($i = 0; $i -lt $props.Count; $i++) {
-            $key = ('"' + $props[$i].Name + '":').PadRight($width)
-            $fields = @($props[$i].Value.PSObject.Properties | ForEach-Object { (ConvertTo-Json $_.Name -Compress) + ': ' + (ConvertTo-Json $_.Value -Compress -Depth 5) })
-            "  $key { $($fields -join ', ') }$(if ($i -lt $props.Count - 1) { ',' })"
-        }
-        $tmp = "$path.tmp"
-        Set-Content -LiteralPath $tmp -Value (@('{') + $lines + @('}')) -Encoding utf8
-        $null = Get-Content $tmp -Raw | ConvertFrom-Json   # never swap in a file that doesn't parse
-        Move-Item -LiteralPath $tmp -Destination $path -Force
-    } finally {
-        try { $lock.ReleaseMutex() } catch { }
-        $lock.Dispose()
-    }
+        $list | Add-Member -NotePropertyName $Name -NotePropertyValue ([pscustomobject][ordered]@{ port = $port; label = $Label }) -Force
+        Save-CWebInstanceList -List $list -Path $path
+    } finally { Exit-CWebInstanceLock $lock }
     return Get-CWebInstance -Name $Name -Root $Root
+}
+
+function Remove-CWebInstance {
+    # Takes an instance off this machine's list. Its folder (profile, sign-ins, logs, keys) stays, so it shows as a
+    # leftover profile (Restore / Delete). A machine-added instance leaves <data folder>\instances.json; a default one
+    # (in the repo's instances.json, which this never edits) gets "removed": true in config.json. The caller stops it first.
+    param([string]$Name, [string]$Root = $PSScriptRoot)
+    $lock = Enter-CWebInstanceLock
+    try {
+        $all = Get-CWebInstanceTable -Root $Root
+        if (-not $all.Contains($Name)) { throw "No instance '$Name'." }
+        if ($all.Count -le 1) { throw "'$Name' is the only instance. Create another one before deleting it." }
+        $path = Join-Path (Get-CWebDataRoot) 'instances.json'
+        if (Test-Path $path) {
+            $list = Get-Content $path -Raw | ConvertFrom-Json
+            if ($list.PSObject.Properties[$Name]) { $list.PSObject.Properties.Remove($Name); Save-CWebInstanceList -List $list -Path $path }
+        }
+        $defaults = Get-Content (Join-Path $Root 'instances.json') -Raw | ConvertFrom-Json
+        $cfg = Read-CWebConfigFile
+        if ($defaults.PSObject.Properties[$Name]) {
+            if (-not $cfg.instances.PSObject.Properties[$Name]) { $cfg.instances | Add-Member -NotePropertyName $Name -NotePropertyValue ([pscustomobject]@{}) }
+            $cfg.instances.$Name | Add-Member -NotePropertyName 'removed' -NotePropertyValue $true -Force
+            Save-CWebConfigFile $cfg
+        } elseif ($cfg.instances.PSObject.Properties[$Name]) {
+            $cfg.instances.PSObject.Properties.Remove($Name)   # its overrides (a custom port) went with it
+            Save-CWebConfigFile $cfg
+        }
+    } finally { Exit-CWebInstanceLock $lock }
+}
+
+# ---- helpers for editing instances.json and config.json (one at a time across servers) ----
+function Enter-CWebInstanceLock {
+    $lock = [System.Threading.Mutex]::new($false, 'Local\CWeb-instances-json')
+    try { $got = $lock.WaitOne(10000) } catch [System.Threading.AbandonedMutexException] { $got = $true }
+    if (-not $got) { $lock.Dispose(); throw 'instances.json is busy; try again.' }
+    return $lock
+}
+function Exit-CWebInstanceLock($lock) { try { $lock.ReleaseMutex() } catch { }; $lock.Dispose() }
+
+function Save-CWebJsonFile([string]$Path, [string[]]$Lines) {
+    $tmp = "$Path.tmp"
+    Set-Content -LiteralPath $tmp -Value $Lines -Encoding utf8
+    $null = Get-Content $tmp -Raw | ConvertFrom-Json   # never swap in a file that doesn't parse
+    Move-Item -LiteralPath $tmp -Destination $Path -Force
+}
+
+function Save-CWebInstanceList {
+    # One instance per line, the way the file is laid out by hand.
+    param($List, [string]$Path)
+    $props = @($List.PSObject.Properties)
+    $width = ($props | ForEach-Object { $_.Name.Length } | Measure-Object -Maximum).Maximum + 3
+    $lines = for ($i = 0; $i -lt $props.Count; $i++) {
+        $key = ('"' + $props[$i].Name + '":').PadRight($width)
+        $fields = @($props[$i].Value.PSObject.Properties | ForEach-Object { (ConvertTo-Json $_.Name -Compress) + ': ' + (ConvertTo-Json $_.Value -Compress -Depth 5) })
+        "  $key { $($fields -join ', ') }$(if ($i -lt $props.Count - 1) { ',' })"
+    }
+    Save-CWebJsonFile $Path (@('{') + $lines + @('}'))
+}
+
+function Read-CWebConfigFile {
+    # config.json as written (no defaults filled in), with an "instances" object to edit.
+    $path = (Get-CWebConfig).Path
+    $cfg = if (Test-Path $path) { Get-Content $path -Raw | ConvertFrom-Json } else { [pscustomobject]@{ portFallback = $true; firstPort = 9380 } }
+    if (-not $cfg.PSObject.Properties['instances'] -or $null -eq $cfg.instances) { $cfg | Add-Member -NotePropertyName 'instances' -NotePropertyValue ([pscustomobject]@{}) -Force }
+    return $cfg
+}
+function Save-CWebConfigFile($cfg) {
+    New-Item -ItemType Directory -Path (Get-CWebDataRoot) -Force | Out-Null
+    Save-CWebJsonFile (Get-CWebConfig).Path @($cfg | ConvertTo-Json -Depth 10)
+}
+
+function Clear-CWebRemovedMark {
+    # Drops "removed": true for this name from config.json. True if there was one.
+    param([string]$Name)
+    $cfg = Read-CWebConfigFile
+    $entry = $cfg.instances.PSObject.Properties[$Name]
+    if (-not $entry -or $entry.Value.removed -ne $true) { return $false }
+    $entry.Value.PSObject.Properties.Remove('removed')
+    if (-not @($entry.Value.PSObject.Properties).Count) { $cfg.instances.PSObject.Properties.Remove($Name) }
+    Save-CWebConfigFile $cfg
+    return $true
 }
 
 function Start-CWebServer {

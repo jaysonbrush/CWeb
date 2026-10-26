@@ -213,7 +213,9 @@ if ($ok -and -not $Force) {
 Step 'Self-check'
 & pwsh -NoProfile -File (Join-Path $root 'Test-CWeb.ps1') | ForEach-Object { "  $_" }
 if ($LASTEXITCODE) { throw 'Test-CWeb.ps1 found a problem (above).' }
-if (-not $SkipTest) {
+if (-not $SkipTest -and -not (Get-CWebInstanceTable -Root $root).Contains('test')) {
+    Say "  No 'test' instance (deleted on the status page), so Chrome's start isn't checked. Restore it under + New to bring the check back." Yellow
+} elseif (-not $SkipTest) {
     $test = Get-CWebInstance -Name 'test' -Root $root
     if (Get-CWebRunningServer -Instance $test) {
         Say "  The 'test' instance is already running; not starting it again." Yellow
@@ -233,9 +235,10 @@ if (-not $SkipTest) {
 }
 
 Step 'Ready'
-$work = Get-CWebInstance -Name 'work' -Root $root
+$names = @((Get-CWebInstanceTable -Root $root).Keys)
+$first = Get-CWebInstance -Name $(if ('work' -in $names) { 'work' } else { $names[0] }) -Root $root
 Say "  Start an instance:  Start-CWeb.cmd   (or: Start-CWeb.cmd <name>)" White
-Say "  Status page:        http://127.0.0.1:$($work.Port)/status   (work)" White
+Say "  Status page:        http://127.0.0.1:$($first.Port)/status   ($($first.Name))" White
 Say "  Settings:           $configPath   (custom ports: see claude.md, Settings)" White
-Say "  Agents connect with: $bashRoot/cweb.sh <instance> <client-name> connect" White
+Say "  Agents connect with: $bashRoot/cweb.sh <client-name> connect   (attaches to the instance you have running)" White
 Say "  Data folder:        $current" White

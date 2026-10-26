@@ -1,20 +1,23 @@
 # CWeb-Client.ps1 -- how agents and scripts connect to a CWeb instance (PowerShell 7).
 #
 #   . <CWeb folder>\CWeb-Client.ps1
-#   Connect-CWeb -Instance work -Client support-ticket-triage      # once per session; safe to repeat
-#   Invoke-CWeb  -Instance work -Client support-ticket-triage @{ action = 'navigate'; url = 'https://example.org' }
+#   $c = Connect-CWeb -Client support-ticket-triage                # once per session; safe to repeat
+#   Invoke-CWeb -Instance $c.instance -Client support-ticket-triage @{ action = 'navigate'; url = 'https://example.org' }
 #
-# Connect-CWeb finds the instance's server (starting it if it's down), reuses the client's saved key if it still
-# works, and otherwise asks for access and waits for the user to approve it on the status page. The key is saved in
-# %USERPROFILE%\CWebData\<instance>\clients\<client>.key, so later sessions with the same client name connect with no
+# Connect-CWeb attaches to the instance the user is working in: the running one (or, if several run, the one this
+# client already has a key for; otherwise it lists them so the agent can ask). With -Instance it attaches to that one,
+# if it's running. It never starts or creates an instance: that's the user's call. It reuses the client's saved key if
+# it still works, and otherwise asks for access and waits for the user to approve it on the status page. The key is
+# saved in <data folder>\<instance>\clients\<client>.key, so later sessions with the same client name connect with no
 # click. Keys are never printed.
 #
-# Run as a script (used by cweb.sh), it prints JSON and exits 0 connected, 3 still waiting, 4 denied, 1 error:
-#   pwsh -NoProfile -File CWeb-Client.ps1 -Connect -Instance work -Client support-ticket-triage
+# Run as a script (used by cweb.sh), it prints JSON and exits 0 connected, 3 still waiting, 4 denied, 6 several
+# instances running (pick one), 1 error (e.g. none running):
+#   pwsh -NoProfile -File CWeb-Client.ps1 -Connect -Client support-ticket-triage [-Instance work]
 
 param(
     [switch]$Connect,
-    [string]$Instance = 'work',
+    [string]$Instance,
     [string]$Client,
     [int]$WaitSeconds = 90
 )
@@ -46,11 +49,32 @@ function Invoke-CWebHttp {
 
 function Connect-CWeb {
     param(
-        [string]$Instance = 'work',
+        [string]$Instance,        # omit: the running instance
         [Parameter(Mandatory)] [string]$Client,
         [int]$WaitSeconds = 90,   # how long this call waits for approval; run it again to keep waiting
-        [switch]$NoStart          # don't start the server if it's down
+        [switch]$NoStart          # no effect (kept for old scripts): connect never starts an instance
     )
+    $null = Get-CWebClientFiles -Inst ([pscustomobject]@{ ClientsDir = '.' }) -Client $Client   # checks the name
+    $ask = 'Ask the user to start the instance they work in (Start-CWeb.cmd, or Start on its status page). Agents never start or create instances.'
+
+    # 1. The instance: the one the user has running. Never start one.
+    if (-not $Instance) {
+        $running = @(Get-CWebInstanceList -Root $script:CWebClientRoot | Where-Object running)
+        if ($running.Count -gt 1) {
+            # Several: the one this client already has a key for, if that's just one.
+            $mine = @($running | Where-Object { Test-Path (Get-CWebClientFiles -Inst (Get-CWebInstance -Name $_.name -Root $script:CWebClientRoot) -Client $Client).Key })
+            if ($mine.Count -eq 1) { $running = $mine }
+        }
+        if ($running.Count -eq 0) {
+            return [pscustomobject]@{ status = 'error'; instance = $null; client = $Client; message = "No CWeb instance is running. $ask" }
+        }
+        if ($running.Count -gt 1) {
+            $names = ($running | ForEach-Object { "$($_.name) ($($_.label))" }) -join ', '
+            return [pscustomobject]@{ status = 'choose'; instance = $null; client = $Client; instances = @($running | ForEach-Object { [ordered]@{ name = $_.name; label = $_.label } })
+                message = "Several CWeb instances are running: $names. Ask the user which one they work in, then connect to it by name." }
+        }
+        $Instance = $running[0].name
+    }
     $inst = Get-CWebInstance -Name $Instance -Root $script:CWebClientRoot
     $files = Get-CWebClientFiles -Inst $inst -Client $Client
     $base = "http://127.0.0.1:$($inst.Port)"
@@ -58,16 +82,8 @@ function Connect-CWeb {
     function Result($status, $message) {
         [pscustomobject]@{ status = $status; instance = $inst.Name; client = $Client; port = $inst.Port; statusUrl = $statusUrl; message = $message }
     }
-
-    # 1. The server: find it, or start it.
     if (-not (Get-CWebRunningServer -Instance $inst)) {
-        if ($NoStart) { return Result 'error' "CWeb '$($inst.Name)' isn't running. Start it with Start-CWeb.cmd $($inst.Name)." }
-        Write-Host "CWeb '$($inst.Name)' isn't running; starting it..."
-        try { Start-CWebServer -Instance $inst -Root $script:CWebClientRoot | Out-Null } catch { return Result 'error' $_.Exception.Message }
-        # Look it up again: the server may have moved off a port another program holds.
-        $inst = Get-CWebInstance -Name $Instance -Root $script:CWebClientRoot
-        $base = "http://127.0.0.1:$($inst.Port)"
-        $statusUrl = "$base/status#access"
+        return Result 'error' "CWeb '$($inst.Name)' isn't running. $ask"
     }
 
     # 2. A saved key that still works: done.
@@ -129,7 +145,7 @@ function Connect-CWeb {
 function Invoke-CWeb {
     # Sends one command to the API with the client's saved key. Returns the server's reply.
     param(
-        [string]$Instance = 'work',
+        [Parameter(Mandatory)] [string]$Instance,   # the one Connect-CWeb returned
         [Parameter(Mandatory)] [string]$Client,
         [Parameter(Mandatory, Position = 0)] [hashtable]$Body,
         [int]$TimeoutSec = 300
@@ -139,7 +155,7 @@ function Invoke-CWeb {
     if (-not (Test-Path $files.Key)) { throw "Not connected as '$Client' to CWeb '$($inst.Name)'. Run Connect-CWeb -Instance $($inst.Name) -Client $Client." }
     $key = (Get-Content -LiteralPath $files.Key -Raw).Trim()
     $r = Invoke-CWebHttp POST "http://127.0.0.1:$($inst.Port)/api" $Body @{ 'X-API-Key' = $key } $TimeoutSec
-    if ($r.code -eq 0) { throw "CWeb '$($inst.Name)' isn't answering. Run Connect-CWeb (it starts the server)." }
+    if ($r.code -eq 0) { throw "CWeb '$($inst.Name)' isn't answering (stopped?). Ask the user to start it; agents never start instances." }
     if ($r.code -eq 401) { throw "The key for '$Client' was revoked or replaced. Run Connect-CWeb -Instance $($inst.Name) -Client $Client." }
     return $r.json
 }
@@ -152,5 +168,5 @@ if ($Connect) {
         $res = [pscustomobject]@{ status = 'error'; instance = $Instance; client = $Client; message = $_.Exception.Message }
     }
     $res | ConvertTo-Json -Compress
-    exit $(switch ($res.status) { 'connected' { 0 } 'waiting' { 3 } 'denied' { 4 } default { 1 } })
+    exit $(switch ($res.status) { 'connected' { 0 } 'waiting' { 3 } 'denied' { 4 } 'choose' { 6 } default { 1 } })
 }

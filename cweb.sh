@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # cweb.sh -- CWeb from Bash (Git Bash). Agents use this instead of raw curl.
 #
-#   cweb.sh <instance> <client> connect          # once per session; safe to repeat (starts the server if needed)
+#   cweb.sh <client> connect                     # once per session; safe to repeat. Attaches to the running instance
+#                                                # and replies with its name ("instance"); use that name below.
+#   cweb.sh <instance> <client> connect          # attach to that instance (if it's running)
 #   cweb.sh <instance> <client> '<json>'         # one API command, e.g. '{"action":"navigate","url":"https://example.org"}'
 #   cweb.sh <instance> <client> - < body.json    # body from stdin (long scripts)
 #
+# connect never starts or creates an instance: if none (or not the named one) is running, ask the user to start it.
 # Prints the server's JSON reply. Exit codes: 0 ok, 3 still waiting for approval, 4 denied,
-# 5 not connected / key revoked (run connect), 1 other error.
+# 5 not connected / key revoked (run connect), 6 several instances running (ask the user which), 1 other error.
 # The key is read from <data folder>\<instance>\clients\<client>.key (data folder: CWEB_DATA, else
 # %USERPROFILE%\CWebData) and passed to curl on stdin,
 # so it never appears on a command line or in output.
@@ -16,7 +19,11 @@ dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 fail() { printf '{"success":false,"error":"%s"}\n' "$2"; exit "$1"; }
 
-[ $# -eq 3 ] || fail 1 "Usage: cweb.sh <instance> <client> connect|'<json>'|-"
+if [ $# -eq 2 ] && [ "$2" = "connect" ]; then
+    [[ "$1" =~ ^[a-z0-9][a-z0-9-]{0,39}$ ]] || fail 1 "Bad client name: $1 (lowercase letters, digits, hyphens)"
+    exec pwsh -NoProfile -ExecutionPolicy Bypass -File "$dir/CWeb-Client.ps1" -Connect -Client "$1"
+fi
+[ $# -eq 3 ] || fail 1 "Usage: cweb.sh <client> connect | cweb.sh <instance> <client> connect|'<json>'|-"
 inst="$1"; client="$2"; what="$3"
 [[ "$inst" =~ ^[a-z0-9-]{1,30}$ ]] || fail 1 "Bad instance name: $inst"
 [[ "$client" =~ ^[a-z0-9][a-z0-9-]{0,39}$ ]] || fail 1 "Bad client name: $client (lowercase letters, digits, hyphens)"
@@ -64,6 +71,6 @@ reply="${out%$'\n'*}"
 case "$code" in
     200) printf '%s\n' "$reply"; exit 0 ;;
     401) fail 5 "Key for $client was revoked or replaced. Run: cweb.sh $inst $client connect" ;;
-    000) fail 1 "CWeb '$inst' isn't answering on port $port. Run: cweb.sh $inst $client connect (it starts the server)" ;;
+    000) fail 1 "CWeb '$inst' isn't answering on port $port (stopped?). Ask the user to start it; agents never start instances" ;;
     *)   printf '%s\n' "$reply"; exit 1 ;;
 esac

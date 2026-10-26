@@ -31,8 +31,9 @@ itself (a short headless start of the `test` instance). Safe to run again; it sk
 - Sign-ins can't be copied between machines (Chrome ties them to the Windows user on that machine): sign in once per
   machine, per instance.
 
-**Rules:** never write your own page-refresh loop (the keep-alive does that properly); never put a key in a file,
-message or log.
+**Rules:** work in the instance the user has running; never start, create, delete or stop an instance, and never
+edit `instances.json` or `config.json` (those are the user's); never write your own page-refresh loop (the keep-alive
+does that properly); never put a key in a file, message or log.
 
 ---
 
@@ -42,11 +43,19 @@ Pick a **client name** for yourself: lowercase, digits and hyphens, `<team>-<rol
 Use the same name every session; that's what lets you reconnect without asking the user again.
 
 ```bash
-# 1. Connect (once per session; safe to repeat). Starts the instance if it's down.
-$CWEB/cweb.sh work support-ticket-triage connect
+# 1. Connect (once per session; safe to repeat). Attaches to the instance the user has running.
+$CWEB/cweb.sh support-ticket-triage connect
 ```
 
+The reply names the instance (`"instance":"work"`); use that name in every command after it. `connect` never starts
+or creates an instance.
+
 - `"status":"connected"` (exit 0): go ahead.
+- `"status":"choose"` (exit 6): several instances are running (`instances` lists them). Ask the user which one they
+  work in, then `$CWEB/cweb.sh <that instance> support-ticket-triage connect`. (If you already have a key for exactly
+  one of them, `connect` picks that one by itself.)
+- `"status":"error"` (exit 1) with *"No CWeb instance is running"* or *"isn't running"*: ask the user to start the
+  instance they work in. Don't start one yourself.
 - `"status":"waiting"` (exit 3): first time for this name. Tell the user: *"Please approve `support-ticket-triage` on
   &lt;the `statusUrl` from the reply&gt; (Access tab)."* Then run `connect` again; it keeps the same request (it waits 90 s per
   call, because tool calls time out). Don't start anything else meanwhile.
@@ -61,19 +70,19 @@ cat body.json | $CWEB/cweb.sh work support-ticket-triage -
 ```
 
 Exit codes: 0 ok (check `success` in the reply), 3 waiting, 4 denied, **5 not connected or key revoked: run
-`connect` again**, 1 other error. Your key is saved in `<data folder>\<instance>\clients\<client>.key` and passed to
+`connect` again**, 6 several instances running (ask which), 1 other error. Your key is saved in `<data folder>\<instance>\clients\<client>.key` and passed to
 curl privately; you never see or handle it.
 
 From PowerShell scripts:
 
 ```powershell
 . <CWeb>\CWeb-Client.ps1
-Connect-CWeb -Instance work -Client support-ticket-triage          # returns status connected|waiting|denied|error
-Invoke-CWeb  -Instance work -Client support-ticket-triage @{ action = 'gettitle' }
+$c = Connect-CWeb -Client support-ticket-triage     # status connected|waiting|denied|choose|error; -Instance to pick one
+Invoke-CWeb -Instance $c.instance -Client support-ticket-triage @{ action = 'gettitle' }
 ```
 
-**Don't** start `CWeb-Server.ps1` yourself or as a background job of your session; `connect` (or `Start-CWeb.cmd`)
-starts it in its own hidden window so it outlives you.
+**Don't** start `CWeb-Server.ps1`, `Start-CWeb.cmd` or an instance in any other way, and don't use the status page's
+actions (Start, + New, Delete, Stop server): the user decides which instances run.
 
 ## Sharing one browser
 
@@ -111,8 +120,13 @@ entry wins over a default of the same name.
 | `personal` | 9390 | |
 | `test` | 9399 | Headless; for testing CWeb itself |
 
-- Start one: `Start-CWeb.cmd <instance>` (default `work`), the status page's **Start** button, or `connect`.
+- The user starts them: `Start-CWeb.cmd <instance>` (default `work`) or the status page's **Start** button.
+  `connect` only attaches to a running one.
 - New ones: **+ New** on any status page (next free port from `firstPort`, default 9380).
+- **Delete** (in the **+ New** panel's instance list) asks first, stops the instance if it runs, and takes it off the
+  list. Its folder (profile, sign-ins, keys, logs) stays as a leftover profile, so **Restore** brings it back. A
+  machine-added instance leaves `<data folder>\instances.json`; a default one is marked `"removed": true` in
+  `config.json` (the repo's `instances.json` is never edited). The last instance can't be deleted.
 - A client approved on one instance has no access to another. Connect to each separately.
 - Optional per-instance settings: `label`, `startUrl`, `hidden` (headless), `showServerWindow`, `keepAlive`
   (`enabled`, `tickSeconds`, `maxCheckSeconds`).
@@ -137,7 +151,7 @@ Changes apply the next time an instance starts.
 |---|---|---|
 | `portFallback` | `true` | If another program holds an instance's port, the server takes the next free port (up to 100 higher) that no instance is configured for, and says so in its log, the launcher and the status page header. `false`: it doesn't start, and the server log says which port is taken. |
 | `firstPort` | `9380` | Where **+ New** starts looking for a free port. |
-| `instances` | `{}` | Per-instance overrides of any instance setting, field by field: a custom `port`, `label`, `hidden`, ... An entry for a name that isn't an instance yet (with a `port`) adds one. |
+| `instances` | `{}` | Per-instance overrides of any instance setting, field by field: a custom `port`, `label`, `hidden`, ... An entry for a name that isn't an instance yet (with a `port`) adds one; `"removed": true` (written by **Delete**) hides one. |
 
 Ports must be unique across instances and between 1024 and 65535. The port a server really listens on is in its
 `<data folder>\<instance>\server.json`; `cweb.sh`, `Connect-CWeb`, the launcher and the status page's switcher read it
@@ -149,7 +163,8 @@ from there, so a moved server is still found.
 Refreshes every 2 seconds.
 
 - **Header:** instance switcher (running instances link to their page, stopped ones have **Start**, **+ New** creates
-  one and shows leftover profiles), **Stop server** (closes Chrome cleanly, keeps logins).
+  one and shows the instance list with **Delete** and the leftover profiles), **Stop server** (closes Chrome cleanly,
+  keeps logins). The page's actions only work from the page itself (they need its `Origin`).
 - **Tabs:** open a tab; every tab with its owner ("owned by"), who's in it ("in use by"), its keep-alive control,
   session time left, and **Close**.
 - **Commands:** the last 200 commands with client, tab, target, time and result; counts by client and action. Never
@@ -260,9 +275,8 @@ credentials, no customer data.
 
 ## Starting, stopping, restarting
 
-- **Start:** `Start-CWeb.cmd <instance>` (from Bash: `cmd.exe //c start "" "$(cygpath -w "$CWEB")\\Start-CWeb.cmd" work`),
-  the status page's **Start** button, or `cweb.sh <instance> <client> connect`. Safe to repeat: one server per
-  instance (a named lock); a second one exits.
+- **Start** (the user, not agents): `Start-CWeb.cmd <instance>` or the status page's **Start** button. Safe to
+  repeat: one server per instance (a named lock); a second one exits.
 - **Stop:** the status page's **Stop server** (closes Chrome cleanly, logins kept). From a script:
   `curl -s -X POST http://127.0.0.1:<port>/status/stopserver -H "X-Status-Request: 1" -H "Origin: http://127.0.0.1:<port>" -d '{}'`.
   Only when the user asks: it stops the browser for every client.
@@ -342,6 +356,8 @@ CWeb writes nothing outside the data folder and the repo's `browser\` downloads.
 | Symptom | Fix |
 |---|---|
 | `cweb.sh` exit 5 | Not connected, or the key was revoked/replaced: run `connect`. |
+| `connect`: "No CWeb instance is running" / "isn't running" | Ask the user to start the instance they work in. Agents never start one. |
+| `connect` exit 6, `choose` | Several instances run: ask the user which, then `cweb.sh <instance> <client> connect`. |
 | `connect` keeps saying waiting | The user hasn't approved yet; remind them of the Access tab. Requests expire after an hour; `connect` asks again. |
 | "Tab 'x' belongs to …" | Open your own tab with `newtab`, or ask the owner/the user. |
 | "Your tab was closed" | `listtabs`, then `switchtab`. |
@@ -358,6 +374,7 @@ CWeb writes nothing outside the data folder and the repo's `browser\` downloads.
 
 | Version | Changes |
 |---|---|
+| 2026.10.26.017 | **Delete** for instances on the status page (asks first, stops it, keeps its profile as a leftover). Agents attach only to the running instance: `cweb.sh <client> connect` picks it (exit 6 `choose` when several run), and `connect` never starts or creates one. Status-page actions now need the page's own `Origin`. `Invoke-CWeb` needs `-Instance`. |
 | 2026.10.26.016 | `Update-CWeb.cmd`: asks before stopping running instances (`-Yes` to skip), stops them cleanly, pulls, runs setup, restarts what was running. README **Update** section. Location-agnostic: setup installs the cweb skill with this machine's CWeb folder filled in (`-Uninstall` removes it), and the docs no longer assume `C:\CWeb`. |
 | 2026.10.26.015 | Data folder default moved from `%LOCALAPPDATA%\CWeb` to `%USERPROFILE%\CWebData`: the Claude desktop app (MSIX) redirects AppData, so agents and the server saw different folders. Old folder still used until `Setup-CWeb.cmd` moves it. |
 | 2026.10.26.014 | Settings file `<data folder>\config.json`: custom port per instance, `portFallback` (next free port when one is taken), `firstPort`. Clients find a moved server through `server.json`. Setup's location note fixed. |

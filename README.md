@@ -52,17 +52,18 @@ Double-click `Update-CWeb.cmd` in the CWeb folder. It:
    A Chrome window titled **CWeb Work** opens. Sign in to the sites you need.
 2. **Open the status page:** http://127.0.0.1:9380/status (each instance has its own port; the page links them, and
    the launcher prints the address).
-3. **Approve agents:** an agent connects with `cweb.sh work <its-name> connect`. Its request shows as a banner on the
-   status page; **Approve** it on the **Access** tab. It keeps working (and reconnecting in later sessions) until you
+3. **Approve agents:** an agent connects with `cweb.sh <its-name> connect`, which attaches to the instance you
+   have running (if several run, the agent asks you which). Its request shows as a banner on the status page; **Approve** it on the **Access** tab. It keeps working (and reconnecting in later sessions) until you
    **Revoke** it.
 
-That's all. Agents can't start a second server, can't use another instance without a separate approval, and can't
-change a tab another agent opened.
+That's all. Agents never start, create or delete instances: they work in the one you have running. They can't start
+a second server, can't use another instance without a separate approval, and can't change a tab another agent opened.
 
 ## The status page
 
 - **Instances:** switch between instances, **Start** a stopped one, **+ New** to create one (its own Chrome profile:
-  you sign in separately). The New panel also lists **leftover profiles** of removed instances (Restore or Delete).
+  you sign in separately). The New panel lists the instances with **Delete** (it asks first, and keeps the profile
+  and sign-ins) and the **leftover profiles** of deleted instances (Restore or Delete).
 - **Tabs:** every tab, who owns it, who's working in it, how long its session has left, and its keep-alive control.
 - **Commands:** what every agent did, and when.
 - **Keep-alive:** turn a site's keep-alive on or off for this instance; review agent-written **drafts** (View source,

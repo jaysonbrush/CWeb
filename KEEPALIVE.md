@@ -11,7 +11,7 @@ path), so write the real path in each command.
 ## 1. See what's asked
 
 ```bash
-$CWEB/cweb.sh work keepalive-builder connect
+$CWEB/cweb.sh keepalive-builder connect     # attaches to the running instance; the reply names it ("instance":"work")
 $CWEB/cweb.sh work keepalive-builder '{"action":"keepalive","op":"requests"}'
 ```
 

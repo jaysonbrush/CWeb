@@ -1038,13 +1038,38 @@ function Get-StatusData {
 
 # The page's actions (POST /status/closetab). Unlike reads, a write must also be safe from other
 # websites making the browser send it, so it needs the X-Status-Request header (a foreign site can't
-# add it without a CORS preflight, which this server never approves) and, when sent, our own Origin.
+# add it without a CORS preflight, which this server never approves) and our own Origin. The Origin is required, not
+# just checked when sent: the page's fetch always sends it, and a script has to add it on purpose, so an agent doesn't
+# start, create or delete instances by calling these by accident (any program of the user's can still fake it).
 function Test-StatusActionRequest {
     param([System.Net.HttpListenerRequest]$Request)
     if (-not (Test-LocalStatusRequest -Request $Request)) { return $false }
     if ($Request.Headers['X-Status-Request'] -ne '1') { return $false }
     $origin = $Request.Headers['Origin']
-    return (-not $origin) -or $origin -in @("http://127.0.0.1:$($script:Port)", "http://localhost:$($script:Port)")
+    return [bool]$origin -and $origin -in @("http://127.0.0.1:$($script:Port)", "http://localhost:$($script:Port)")
+}
+
+function Remove-InstanceFromStatus {
+    # Delete on the status page: stops the instance if it's running (its own Stop server: Chrome closes cleanly), then
+    # takes it off the list. Its folder stays as a leftover profile. Deleting this instance stops this server last.
+    param([string]$Name)
+    $other = Get-CWebInstance -Name $Name -Root $script:CWebRoot
+    if ($other.AllNames.Count -le 1) { return @{ success = $false; error = "'$Name' is the only instance. Create another one before deleting it." } }
+    $here = $other.Name -eq $script:InstanceName
+    if (-not $here -and (Test-CWebServerProcess -Instance $other)) {
+        $p = $other.Port
+        try {
+            Invoke-RestMethod "http://127.0.0.1:$p/status/stopserver" -Method POST -ContentType 'application/json' -Body '{}' `
+                -Headers @{ 'X-Status-Request' = '1'; 'Origin' = "http://127.0.0.1:$p" } -TimeoutSec 30 | Out-Null
+        } catch { }
+        $deadline = (Get-Date).AddSeconds(30)
+        while ((Test-CWebServerProcess -Instance $other) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+        if (Test-CWebServerProcess -Instance $other) { return @{ success = $false; error = "'$Name' didn't stop within 30 seconds, so it wasn't deleted. Stop it on its own status page, then try again." } }
+    }
+    Remove-CWebInstance -Name $other.Name -Root $script:CWebRoot
+    Write-Host "[$(Get-Date -Format HH:mm:ss)] instance '$($other.Name)' deleted from the status page; its folder is kept as a leftover profile" -ForegroundColor Yellow
+    if ($here) { $script:StopRequested = $true }
+    return @{ success = $true; deleted = $other.Name; stopping = $here; message = "Deleted '$($other.Name)'. Its profile and sign-ins are kept: Restore it under + New, Leftover profiles." }
 }
 
 function Close-TabByHandle {
@@ -1105,9 +1130,12 @@ function Invoke-StatusAction {
         $body = $reader.ReadToEnd() | ConvertFrom-Json -AsHashtable
         $reader.Close()
     } catch { $body = @{} }
-    $action = ($Request.Url.AbsolutePath -split '/')[-1]   # closetab | newtab | stopserver | approve | deny | revoke | startinstance | newinstance
+    $action = ($Request.Url.AbsolutePath -split '/')[-1]   # closetab | newtab | stopserver | approve | deny | revoke | startinstance | newinstance | deleteinstance | ...
     try {
-        if ($action -eq 'deleteprofile') {
+        if ($action -eq 'deleteinstance') {
+            $result = Remove-InstanceFromStatus -Name ([string]$body.name)
+            $target = [string]$body.name
+        } elseif ($action -eq 'deleteprofile') {
             $result = Remove-CWebLeftoverProfile -Name ([string]$body.name) -Root $script:CWebRoot
             $target = [string]$body.name
         } elseif ($action -in 'kasite', 'karequest', 'kadismiss', 'kaenable', 'kadiscard') {
@@ -1267,7 +1295,7 @@ try {
             Send-StatusPage -Request $request -Response $response
             continue
         }
-        if ($request.HttpMethod -eq "POST" -and $request.Url.AbsolutePath -in @('/status/closetab', '/status/newtab', '/status/stopserver', '/status/approve', '/status/deny', '/status/revoke', '/status/startinstance', '/status/newinstance', '/status/kasite', '/status/karequest', '/status/kadismiss', '/status/kaenable', '/status/kadiscard', '/status/deleteprofile')) {
+        if ($request.HttpMethod -eq "POST" -and $request.Url.AbsolutePath -in @('/status/closetab', '/status/newtab', '/status/stopserver', '/status/approve', '/status/deny', '/status/revoke', '/status/startinstance', '/status/newinstance', '/status/kasite', '/status/karequest', '/status/kadismiss', '/status/kaenable', '/status/kadiscard', '/status/deleteprofile', '/status/deleteinstance')) {
             Invoke-StatusAction -Request $request -Response $response
             if ($script:StopRequested) { Write-Host "[$(Get-Date -Format HH:mm:ss)] Stop requested from the status page"; break }
             continue

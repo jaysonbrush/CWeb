@@ -19,14 +19,21 @@ If `cweb.sh` or Chrome is missing on this machine, CWeb isn't set up: ask the us
 Pick a client name (`<team>-<role>`, lowercase, e.g. `support-ticket-triage`) and keep it across sessions.
 
 ```bash
-{{CWEB}}/cweb.sh work support-ticket-triage connect
+{{CWEB}}/cweb.sh support-ticket-triage connect
 ```
+
+It attaches to the instance the user has running. The reply names it (`"instance":"work"`): use that name in every
+command below.
 
 - `connected`: carry on.
 - `waiting`: ask the user to approve your name at the `statusUrl` in the reply (Access tab), then run `connect` again.
 - `denied`: stop and ask the user.
+- `choose` (exit 6): several instances are running. Ask the user which one they work in, then
+  `{{CWEB}}/cweb.sh <instance> support-ticket-triage connect`.
+- `error` with "No CWeb instance is running" or "isn't running": ask the user to start the instance they work in.
 
-It starts the instance if it isn't running. Never start the server yourself.
+Never start, create, delete or stop an instance (no `Start-CWeb.cmd`, no status-page actions), and never edit
+`instances.json` or `config.json`: the user decides which instances run.
 
 ## 2. Work in your own tab
 

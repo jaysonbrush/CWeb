@@ -117,6 +117,14 @@
     <button type="button" id="ni-cancel">Cancel</button>
     <span class="small" id="ni-msg">A new instance has its own Chrome profile: you sign in to its sites separately.</span>
   </form>
+  <div class="card" id="instbox" style="display:none">
+    <h2>Instances</h2>
+    <div class="wrap"><table>
+      <thead><tr><th>Instance</th><th>Port</th><th>State</th><th></th></tr></thead>
+      <tbody id="instlist"></tbody>
+    </table></div>
+    <div class="small" style="margin-top:6px">Delete stops an instance (its Chrome window closes) and takes it off the list. Its profile and sign-ins are kept as a leftover profile below, so Restore brings it back.</div>
+  </div>
   <div class="card" id="profbox" style="display:none">
     <h2>Leftover profiles</h2>
     <div class="wrap"><table>
@@ -592,15 +600,47 @@
     add.title = 'Create another instance (its own Chrome profile and port)';
     add.onclick = () => {
       document.getElementById('newinst').style.display = 'flex';
+      document.getElementById('instbox').style.display = 'block';
       document.getElementById('profbox').style.display = 'block';
       document.getElementById('ni-name').focus();
       loadProfiles();
     };
     box.replaceChildren(el('span', 'Instances', 'lbl'), ...pills, add);
+    renderInstanceList(list, current);
+  }
+
+  // ---- instance list with Delete (in the + New panel) ----
+  function renderInstanceList(list, current) {
+    const tb = document.getElementById('instlist');
+    tb.replaceChildren(...list.map(i => {
+      const tr = el('tr'), act = el('td');
+      const del = el('button', 'Delete', 'close'); del.type = 'button';
+      del.disabled = list.length <= 1;
+      del.title = list.length <= 1 ? 'The only instance: create another one first' : `Stop ${i.label} and take it off the list (its profile is kept)`;
+      del.onclick = () => deleteInstance(i, i.name === current);
+      act.append(del);
+      const state = i.name === current ? 'this page' : (i.running ? 'running' : 'stopped');
+      tr.append(el('td', `${i.label} (${i.name})`, 'title'), el('td', String(i.port)), el('td', state), act);
+      return tr;
+    }));
+  }
+  async function deleteInstance(i, here) {
+    const msg = `Delete the ${i.label} instance (${i.name})?\n\n`
+      + (i.running || here ? 'It is running: its Chrome window closes, and any agent working in it is interrupted.\n' : '')
+      + (here ? 'This is the instance of this page, so this page stops too.\n' : '')
+      + '\nIts profile and sign-ins are kept as a leftover profile (+ New, Leftover profiles): Restore brings it back.';
+    if (!confirm(msg)) return;
+    try {
+      const res = await statusAction('/status/deleteinstance', { name: i.name });
+      if (!res.success) { alert('Not deleted: ' + (res.error || 'unknown error')); return; }
+      if (res.stopping) { alert(res.message + '\n\nThis instance is stopping now.'); return; }
+    } catch (e) { alert('Not deleted: ' + e); return; }
+    instSig = ''; poll(); loadProfiles();
   }
 
   document.getElementById('ni-cancel').onclick = () => {
     document.getElementById('newinst').style.display = 'none';
+    document.getElementById('instbox').style.display = 'none';
     document.getElementById('profbox').style.display = 'none';
   };
 
