@@ -1,0 +1,711 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CWeb Status</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #1d2330; --muted: #677085; --line: #e3e6ec;
+    --ok: #1f8a4c; --ok-bg: #e5f5ec; --warn: #a86400; --warn-bg: #fdf1dc; --bad: #c0362c; --bad-bg: #fbe6e4;
+    --accent: #2b5fd9; --accent-bg: #e8eefc; --bar: #d9dee7; --input: #ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --card: #1b1f27; --text: #e6e9ef; --muted: #8d95a7; --line: #2a303b;
+      --ok: #4cc283; --ok-bg: #173527; --warn: #f0b04a; --warn-bg: #3a2c12; --bad: #f07067; --bad-bg: #3d1d1b;
+      --accent: #7aa2ff; --accent-bg: #1d2a47; --bar: #2f3542; --input: #12151b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 1200px; margin: 0 auto; padding: 20px 16px 40px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; margin-bottom: 16px; }
+  header #stop { margin-left: auto; }
+  h1 { font-size: 20px; margin: 0; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 10px; }
+  .meta { color: var(--muted); }
+  .pill { display: inline-block; padding: 1px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .pill.ok { color: var(--ok); background: var(--ok-bg); }
+  .pill.warn { color: var(--warn); background: var(--warn-bg); }
+  .pill.bad { color: var(--bad); background: var(--bad-bg); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-bottom: 16px; }
+  .grid .card { margin: 0; }
+  .big { font-size: 22px; font-weight: 600; }
+  .small { font-size: 12px; color: var(--muted); }
+  .wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 12px; color: var(--muted); font-weight: 600; white-space: nowrap; }
+  tr:last-child td { border-bottom: 0; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .url { color: var(--muted); font-size: 12px; word-break: break-all; }
+  .left { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
+  .bar { height: 4px; background: var(--bar); border-radius: 2px; margin-top: 4px; min-width: 80px; }
+  .bar > span { display: block; height: 100%; border-radius: 2px; }
+  .err { color: var(--bad); }
+  .events { list-style: none; margin: 0; padding: 0; }
+  .events li { padding: 5px 0; border-bottom: 1px solid var(--line); }
+  .events li:last-child { border-bottom: 0; }
+  .events time { color: var(--muted); font-variant-numeric: tabular-nums; margin-right: 8px; }
+  .chips span { display: inline-block; margin: 0 6px 6px 0; padding: 2px 8px; border: 1px solid var(--line); border-radius: 6px; font-size: 12px; }
+  .empty { color: var(--muted); font-style: italic; }
+  #offline, #starterr { display: none; margin-bottom: 16px; }
+  .here { font-size: 11px; color: var(--accent); font-weight: 600; margin-left: 6px; }
+  .owner { font-size: 11px; font-weight: 600; margin-left: 6px; padding: 0 6px; border-radius: 4px; color: var(--warn); background: var(--warn-bg); }
+  .tabname { color: var(--muted); font-size: 12px; margin-right: 4px; }
+  .title { font-weight: 600; }
+  button { font: inherit; font-size: 13px; padding: 5px 12px; border-radius: 6px; cursor: pointer;
+    border: 1px solid var(--line); background: transparent; color: var(--text); }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { color: var(--muted); cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.close { font-size: 12px; padding: 3px 10px; color: var(--bad); white-space: nowrap; }
+  button.close:hover:not(:disabled) { background: var(--bad-bg); border-color: var(--bad); }
+  input { font: inherit; padding: 5px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--input); color: var(--text); }
+  input:focus { outline: 2px solid var(--accent-bg); border-color: var(--accent); }
+  .newtab { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .newtab #nt-url { flex: 1 1 320px; min-width: 0; }
+  .newtab #nt-name { flex: 0 1 160px; min-width: 0; }
+  #nt-msg { margin-top: 6px; min-height: 18px; }
+  nav { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 16px; overflow-x: auto; }
+  nav a { padding: 8px 14px; color: var(--muted); text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; font-weight: 600; }
+  nav a.active { color: var(--accent); border-bottom-color: var(--accent); }
+  nav a .count { font-weight: 400; color: var(--muted); margin-left: 4px; }
+  section[data-panel] { display: none; }
+  section[data-panel].active { display: block; }
+  .pager { display: flex; align-items: center; gap: 10px; justify-content: flex-end; margin-top: 10px; }
+  #accessbanner { display: none; margin-bottom: 16px; border-color: var(--accent); background: var(--accent-bg); }
+  #accessbanner a { color: var(--accent); font-weight: 600; margin-left: 8px; }
+  nav a .count.alert { color: #fff; background: var(--accent); border-radius: 999px; padding: 0 7px; font-weight: 600; }
+  .acts { display: flex; gap: 6px; justify-content: flex-end; }
+  .instances { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: -6px 0 16px; }
+  .instances .lbl { font-size: 12px; color: var(--muted); margin-right: 2px; }
+  .inst { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border: 1px solid var(--line); border-radius: 999px;
+    font-size: 12px; font-weight: 600; color: var(--text); text-decoration: none; background: var(--card); }
+  a.inst:hover { border-color: var(--accent); }
+  .inst .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
+  .inst.cur { color: var(--accent); background: var(--accent-bg); border-color: var(--accent); }
+  .inst.off { color: var(--muted); font-weight: 400; cursor: default; }
+  .inst.off .dot { background: var(--bar); }
+  button.inst { cursor: pointer; font-weight: 400; color: var(--muted); }
+  button.inst:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
+  button.inst .go { color: var(--accent); font-weight: 600; }
+  button.inst .dot { background: var(--bar); }
+  .inst.starting .dot { background: var(--warn); }
+  .inst.add { border-style: dashed; }
+  #newinst { display: none; align-items: center; flex-wrap: wrap; gap: 6px; margin: -8px 0 16px; }
+  #newinst input { font-size: 12px; padding: 3px 8px; }
+  #newinst #ni-name { width: 130px; } #newinst #ni-label { width: 150px; }
+  #newinst button { font-size: 12px; padding: 3px 10px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1 id="heading">CWeb</h1>
+    <span class="meta" id="server"></span>
+    <span id="ka"></span>
+    <button class="close" id="stop" type="button" title="Close the automation Chrome and stop the server">Stop server</button>
+  </header>
+  <div class="instances" id="instances"></div>
+  <form id="newinst">
+    <input id="ni-name" placeholder="name, e.g. social" pattern="[a-z0-9][a-z0-9-]{0,29}" required aria-label="Instance name">
+    <input id="ni-label" placeholder="label (optional)" maxlength="30" aria-label="Instance label">
+    <button class="primary" type="submit">Create and start</button>
+    <button type="button" id="ni-cancel">Cancel</button>
+    <span class="small" id="ni-msg">A new instance has its own Chrome profile: you sign in to its sites separately.</span>
+  </form>
+  <div class="card" id="profbox" style="display:none">
+    <h2>Leftover profiles</h2>
+    <div class="wrap"><table>
+      <thead><tr><th>Profile</th><th>Size</th><th>Last used</th><th></th></tr></thead>
+      <tbody id="leftovers"><tr><td colspan="4" class="empty">Loading...</td></tr></tbody>
+    </table></div>
+    <div class="small" style="margin-top:6px">Instances removed from the list keep their folder (profile, logins, logs). Restore brings one back as an instance; Delete moves the folder to <code><span class="dataroot">the data folder</span>\_deleted</code>, removed for good after 30 days.</div>
+  </div>
+
+  <div class="card pill bad" id="offline">The server isn't running. Start it with Start-CWeb, then reload this page.</div>
+  <div class="card pill bad" id="starterr"></div>
+  <div class="card" id="accessbanner"><span id="accessbanner-text"></span><a href="#access">Review</a></div>
+
+  <div class="grid">
+    <div class="card"><h2>Uptime</h2><div class="big" id="uptime">-</div><div class="small" id="started"></div></div>
+    <div class="card"><h2>Requests</h2><div class="big" id="reqs">-</div><div class="small" id="errs"></div></div>
+    <div class="card"><h2>Browser</h2><div class="big" id="tabs">-</div><div class="small" id="current"></div></div>
+    <div class="card"><h2>Sessions</h2><div class="big" id="sess">-</div><div class="small" id="sessnote"></div></div>
+  </div>
+
+  <nav>
+    <a href="#tabs" data-tab="tabs">Tabs<span class="count" id="c-tabs"></span></a>
+    <a href="#commands" data-tab="commands">Commands<span class="count" id="c-commands"></span></a>
+    <a href="#keepalive" data-tab="keepalive">Keep-alive<span class="count" id="c-keepalive"></span></a>
+    <a href="#access" data-tab="access">Access<span class="count" id="c-access"></span></a>
+  </nav>
+
+  <section data-panel="tabs">
+    <div class="card">
+      <h2>Open a tab</h2>
+      <form class="newtab" id="nt-form">
+        <input id="nt-url" type="url" placeholder="https://..." required aria-label="Address">
+        <input id="nt-name" placeholder="name (optional)" pattern="[A-Za-z0-9_-]{1,40}" aria-label="Tab name">
+        <button class="primary" type="submit">Open tab</button>
+      </form>
+      <div class="small" id="nt-msg">Without a name it's named after its site (e.g. example, example-2). Tabs you open in Chrome yourself are named the same way within 30 seconds.</div>
+    </div>
+    <div class="card">
+      <h2>Open tabs</h2>
+      <div class="wrap"><table>
+        <thead><tr><th>Tab</th><th>Site</th><th>Keep-alive</th><th>Time left (est.)</th><th>Last result</th><th>Last renew</th><th>Next check</th><th></th></tr></thead>
+        <tbody id="sessions"></tbody>
+      </table></div>
+      <div class="small" style="margin-top:8px">Time left counts down from the last check. Sites that reset on any activity often have more time left than shown.</div>
+    </div>
+  </section>
+
+  <section data-panel="commands">
+    <div class="card">
+      <h2>Recent commands</h2>
+      <div class="wrap"><table>
+        <thead><tr><th>Time</th><th>Client</th><th>Action</th><th>Target</th><th class="num">ms</th><th>Result</th></tr></thead>
+        <tbody id="recent"></tbody>
+      </table></div>
+      <div class="pager">
+        <span class="small" id="pg-info"></span>
+        <button id="pg-prev" type="button">Newer</button>
+        <button id="pg-next" type="button">Older</button>
+      </div>
+    </div>
+    <div class="card"><h2>Commands by client</h2><div class="chips" id="byclient"></div></div>
+    <div class="card"><h2>Commands by action</h2><div class="chips" id="byaction"></div></div>
+  </section>
+
+  <section data-panel="keepalive">
+    <div class="card" id="drafts-card">
+      <h2>Drafts waiting for review</h2>
+      <div id="drafts"></div>
+      <div class="small" style="margin-top:8px">Profiles written by agents. A draft never runs until you enable it. Check that @match names only the vendor's own domain (e.g. <code>[^/]+\.example\.com</code>), never a customer's, and that probe() only reads.</div>
+    </div>
+    <div class="card">
+      <h2>Requests</h2>
+      <div class="wrap"><table>
+        <thead><tr><th>Site</th><th>Asked</th><th>State</th><th>Note</th><th></th></tr></thead>
+        <tbody id="karequests"></tbody>
+      </table></div>
+      <div class="small" style="margin-top:8px">Filed with the Keep alive button on a tab. To work them, tell an agent: "work the CWeb keep-alive requests".</div>
+    </div>
+    <div class="card">
+      <h2>Site profiles</h2>
+      <div class="wrap"><table>
+        <thead><tr><th>Site</th><th>Matches</th><th>On this instance</th></tr></thead>
+        <tbody id="sites"></tbody>
+      </table></div>
+      <div class="small" style="margin-top:8px">One file per site in this machine's data folder (keepalive\), shared by all instances. Switching one off affects only this instance.</div>
+    </div>
+    <div class="card"><h2>Renewals and warnings</h2><ul class="events" id="events"></ul></div>
+  </section>
+
+  <section data-panel="access">
+    <div class="card">
+      <h2>Waiting for approval</h2>
+      <div class="wrap"><table>
+        <thead><tr><th>Client</th><th>Asked at</th><th></th></tr></thead>
+        <tbody id="pending"></tbody>
+      </table></div>
+      <div class="small" style="margin-top:8px">Approve only names you expect. An approved client can use this browser and every site you're signed in to here. Requests not decided within an hour expire; the client can ask again.</div>
+    </div>
+    <div class="card">
+      <h2>Approved clients</h2>
+      <div class="wrap"><table>
+        <thead><tr><th>Client</th><th>Approved</th><th>Last used</th><th></th></tr></thead>
+        <tbody id="clients"></tbody>
+      </table></div>
+      <div class="small" style="margin-top:8px">Approval lasts until you revoke it, including across restarts. Revoking stops the client's key from working at once.</div>
+    </div>
+  </section>
+</main>
+<script>
+  const PAGE = 25;
+  let data = null, fetchedAt = 0, page = 0;
+
+  function el(tag, text, cls) {
+    const e = document.createElement(tag);
+    if (text !== undefined && text !== null) e.textContent = text;
+    if (cls) e.className = cls;
+    return e;
+  }
+  function dur(s) {
+    s = Math.max(0, Math.round(s));
+    const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), sec = s % 60;
+    return h ? `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}` : `${m}:${String(sec).padStart(2, '0')}`;
+  }
+  function uptime(s) {
+    const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+    return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`;
+  }
+  function empty(tbody, cols, text) {
+    const tr = el('tr'), td = el('td', text, 'empty'); td.colSpan = cols; tr.append(td); tbody.replaceChildren(tr);
+  }
+
+  // ---- page tabs (kept in the address, e.g. #commands) ----
+  function showTab() {
+    const want = (location.hash || '#tabs').slice(1);
+    const name = document.querySelector(`[data-panel="${want}"]`) ? want : 'tabs';
+    document.querySelectorAll('nav a').forEach(a => a.classList.toggle('active', a.dataset.tab === name));
+    document.querySelectorAll('section[data-panel]').forEach(s => s.classList.toggle('active', s.dataset.panel === name));
+  }
+  window.addEventListener('hashchange', showTab);
+  showTab();
+
+  // ---- actions (same-origin only; the server also requires this header) ----
+  async function statusAction(path, body) {
+    const r = await fetch(path, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Status-Request': '1' },
+      body: JSON.stringify(body)
+    });
+    return r.json();
+  }
+
+  async function closeTab(t) {
+    const u = (data.tabUse || {})[t.id] || { owner: null, users: [] };
+    const msg = `Close ${t.tab}?\n${t.title || ''}\n${t.url || ''}`
+      + (u.owner ? `\n\nOwned by ${u.owner}.` : '')
+      + (u.users.length ? `\n${u.users.join(', ')} ${u.users.length === 1 ? 'is' : 'are'} working in this tab.` : '');
+    if (!confirm(msg)) return;
+    try {
+      const res = await statusAction('/status/closetab', { id: t.id });
+      if (!res.success) alert('Not closed: ' + (res.error || 'unknown error'));
+    } catch (e) { alert('Not closed: ' + e); }
+    poll();
+  }
+
+  document.getElementById('stop').onclick = async () => {
+    if (!confirm('Stop this CWeb server?\n\nIts Chrome window closes (logins are kept). Agents can\'t use the browser until it\'s started again with Start-CWeb.')) return;
+    try {
+      const res = await statusAction('/status/stopserver', {});
+      if (!res.success) { alert('Not stopped: ' + (res.error || 'unknown error')); return; }
+      document.getElementById('stop').disabled = true;
+    } catch (e) { alert('Not stopped: ' + e); }
+  };
+
+  document.getElementById('nt-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const url = document.getElementById('nt-url'), name = document.getElementById('nt-name');
+    const msg = document.getElementById('nt-msg'), btn = e.submitter;
+    btn.disabled = true; msg.className = 'small'; msg.textContent = 'Opening...';
+    try {
+      const res = await statusAction('/status/newtab', { url: url.value.trim(), name: name.value.trim() });
+      if (res.success) {
+        msg.textContent = `Opened ${res.opened}. Click it in the Chrome window to see it.`;
+        url.value = ''; name.value = '';
+      } else { msg.className = 'small err'; msg.textContent = 'Not opened: ' + (res.error || 'unknown error'); }
+    } catch (err) { msg.className = 'small err'; msg.textContent = 'Not opened: ' + err; }
+    btn.disabled = false;
+    poll();
+  });
+
+  // ---- tabs table: countdowns update in place; rows rebuild only when tab data changes,
+  //      so a Close button isn't replaced under the pointer mid-click ----
+  function paintLeft(span) {
+    const s = Number(span.dataset.left) - (Date.now() - Number(span.dataset.at)) / 1000;
+    const state = s < 120 ? 'bad' : s < 300 ? 'warn' : 'ok';
+    span.textContent = dur(s);
+    span.style.color = `var(--${state})`;
+    const fill = span.nextSibling.firstChild;
+    fill.style.width = Math.min(100, Math.max(2, s / 1200 * 100)) + '%';
+    fill.style.background = `var(--${state})`;
+    return state;
+  }
+  function tickCountdowns() {
+    let low = 0;
+    document.querySelectorAll('#sessions span.left').forEach(sp => { if (paintLeft(sp) !== 'ok') low++; });
+    const all = data && data.keepAlive.tabs || [];
+    const tabs = all.filter(t => t.site), out = tabs.filter(t => t.signedOut).length;
+    document.getElementById('sess').textContent = tabs.length;
+    document.getElementById('sessnote').textContent = out ? `${out} signed out` : low ? `${low} running low` : tabs.length ? 'all signed in' : '';
+    document.getElementById('sessnote').className = 'small' + (out ? ' err' : '');
+  }
+
+  // ---- keep-alive controls ----
+  async function kaAction(path, body, what) {
+    try {
+      const res = await statusAction(path, body);
+      if (!res.success) alert(`Not ${what}: ` + (res.error || 'unknown error'));
+      else if (res.message) alert(res.message);
+    } catch (e) { alert(`Not ${what}: ` + e); }
+    lastSig = ''; kaSig = ''; poll();
+  }
+  function siteSwitch(s) {
+    const b = el('button', s.on ? 'On' : 'Off', s.on ? 'primary' : null);
+    b.type = 'button';
+    b.title = s.on ? `Keep-alive is on for ${s.name} on this instance. Click to turn it off.` : `Keep-alive is off for ${s.name} on this instance. Click to turn it on.`;
+    b.onclick = () => kaAction('/status/kasite', { site: s.id, on: !s.on }, s.on ? 'turned off' : 'turned on');
+    return b;
+  }
+  function kaCell(t) {
+    // One control per tab: the site's On/Off switch, its request state, or a Keep alive button.
+    const td = el('td'), ka = data.keepAlive;
+    const s = t.siteId && ka.sites.find(x => x.id === t.siteId);
+    if (s) { td.append(siteSwitch(s)); return td; }
+    if (!t.origin) { td.append(el('span', '-', 'empty')); return td; }
+    const r = ka.requests.find(x => x.site === t.origin);
+    if (r && r.state === 'open') td.append(el('span', 'requested', 'pill warn'));
+    else if (r && r.state === 'drafted') { const p = el('a', 'draft ready', 'pill ok'); p.href = '#keepalive'; td.append(p); }
+    else {
+      if (r && r.state === 'declined') { const p = el('span', 'declined', 'pill bad'); p.title = r.note || ''; td.append(p, document.createTextNode(' ')); }
+      const b = el('button', r ? 'Ask again' : 'Keep alive'); b.type = 'button';
+      b.title = `Ask an agent to work out how to keep ${t.origin} signed in`;
+      b.onclick = () => kaAction('/status/karequest', { id: t.id }, 'requested');
+      td.append(b);
+    }
+    return td;
+  }
+
+  let kaSig = '';
+  function renderKaAdmin(ka) {
+    const nDrafts = ka.drafts.length;
+    const warns = ka.events.filter(e => e.warn).length;
+    const count = document.getElementById('c-keepalive');
+    count.textContent = nDrafts ? `${nDrafts} draft${nDrafts === 1 ? '' : 's'}` : warns ? `${warns} warning${warns === 1 ? '' : 's'}` : '';
+    count.className = 'count' + (nDrafts ? ' alert' : '');
+    const sig = JSON.stringify([ka.sites, ka.requests, ka.drafts.map(d => [d.id, d.saved, d.problem])]);
+    if (sig === kaSig) return;   // rebuild only on change (keeps an open draft's source open, and buttons under the pointer)
+    kaSig = sig;
+
+    const dc = document.getElementById('drafts');
+    document.getElementById('drafts-card').style.display = nDrafts ? 'block' : 'none';
+    dc.replaceChildren(...ka.drafts.map(d => {
+      const box = el('div'); box.style.cssText = 'border-bottom:1px solid var(--line);padding:8px 0';
+      const head = el('div'); head.append(el('span', `${d.name || d.id}`, 'title'), el('span', ` · ${d.id}.js · saved ${d.saved}`, 'small'));
+      if (d.replaces) head.append(el('span', 'replaces the current profile', 'owner'));
+      const info = el('div', null, 'small'); info.append(el('span', 'Matches: '), el('code', d.match || '(none)'), el('span', ` · renews below ${d.renewBelow || '?'} s`));
+      const acts = el('div', null, 'acts'); acts.style.justifyContent = 'flex-start'; acts.style.marginTop = '6px';
+      const pre = el('pre', d.source); pre.style.cssText = 'display:none;max-height:360px;overflow:auto;font-size:12px;background:var(--bg);padding:8px;border-radius:6px';
+      const view = el('button', 'View source'); view.type = 'button';
+      view.onclick = () => { const open = pre.style.display === 'none'; pre.style.display = open ? 'block' : 'none'; view.textContent = open ? 'Hide source' : 'View source'; };
+      const en = el('button', 'Enable', 'primary'); en.type = 'button'; en.disabled = !!d.problem;
+      en.onclick = () => { if (confirm(`Enable ${d.name || d.id}?\n\nIt will run on every tab matching:\n${d.match}\n\non every CWeb instance (switch it off per instance under Site profiles).`)) kaAction('/status/kaenable', { draft: d.id }, 'enabled'); };
+      const no = el('button', 'Discard', 'close'); no.type = 'button';
+      no.onclick = () => { if (confirm(`Discard the draft ${d.id}.js?`)) kaAction('/status/kadiscard', { draft: d.id }, 'discarded'); };
+      acts.append(view, en, no);
+      box.append(head, info);
+      if (d.problem) box.append(el('div', `Can't be enabled: ${d.problem}`, 'small err'));
+      box.append(acts, pre);
+      return box;
+    }));
+
+    const rq = document.getElementById('karequests');
+    if (!ka.requests.length) empty(rq, 5, 'No requests.');
+    else rq.replaceChildren(...ka.requests.map(r => {
+      const tr = el('tr'), b = el('button', 'Dismiss', 'close'); b.type = 'button';
+      b.onclick = () => kaAction('/status/kadismiss', { request: r.id }, 'dismissed');
+      const act = el('td'); act.append(b);
+      const state = r.state === 'drafted' ? `draft ready (${r.draft}) by ${r.by}` : r.state === 'declined' ? `declined by ${r.by}` : r.state;
+      tr.append(el('td', r.site, 'title'), el('td', r.requested), el('td', state), el('td', r.note || ''), act);
+      return tr;
+    }));
+
+    const st = document.getElementById('sites');
+    if (!ka.sites.length) empty(st, 3, 'No site profiles.');
+    else st.replaceChildren(...ka.sites.map(s => {
+      const tr = el('tr'), td = el('td'); td.append(siteSwitch(s));
+      const m = el('td'); m.append(el('code', s.match));
+      tr.append(el('td', s.name, 'title'), m, td);
+      return tr;
+    }));
+  }
+
+  let lastSig = '';
+  function renderSessions() {
+    const tbody = document.getElementById('sessions');
+    const all = data && data.keepAlive.tabs || [];
+    const use = data.tabUse || {};
+    const ka = data.keepAlive;
+    const sig = JSON.stringify([all, use, ka.sites, ka.requests]);
+    if (sig === lastSig) { tickCountdowns(); return; }
+    lastSig = sig;
+    document.getElementById('c-tabs').textContent = all.length;
+    if (!all.length) { empty(tbody, 8, 'No tabs seen yet.'); }
+    else {
+      tbody.replaceChildren(...all.map(t => {
+        const tr = el('tr');
+        const tab = el('td');
+        const name = el('div', t.tab);
+        const u = use[t.id] || { owner: null, users: [] };
+        if (u.owner) name.append(el('span', `owned by ${u.owner}`, 'owner'));
+        if (u.users.length) name.append(el('span', `in use by ${u.users.join(', ')}`, 'here'));
+        tab.append(name);
+        if (t.title) tab.append(el('div', t.title, 'title'));
+        tab.append(el('div', t.url, 'url'));
+        const left = el('td');
+        if (!t.site) left.append(el('span', '-', 'empty'));
+        else if (t.signedOut) left.append(el('span', 'Signed out', 'pill bad'));
+        else if (t.secondsLeftAtCheck !== null && t.checkedAt) {
+          const span = el('span', '', 'left');
+          span.dataset.left = t.secondsLeftAtCheck; span.dataset.at = t.checkedAt;
+          const bar = el('div', null, 'bar'); bar.append(el('span'));
+          left.append(span, bar);
+        } else left.append(el('span', '-', 'empty'));
+        const btn = el('button', 'Close', 'close');
+        btn.type = 'button';
+        btn.disabled = all.length <= 1;
+        btn.title = btn.disabled ? "Can't close the last tab" : 'Close this tab';
+        btn.onclick = () => closeTab(t);
+        const act = el('td'); act.append(btn);
+        tr.append(tab, el('td', t.site || '-'), kaCell(t), left, el('td', t.last), el('td', t.lastRenew || '-'), el('td', t.nextCheck), act);
+        return tr;
+      }));
+    }
+    tickCountdowns();
+  }
+
+  // ---- commands (paginated, newest first) ----
+  function renderCommands() {
+    const list = data.recent || [];
+    const pages = Math.max(1, Math.ceil(list.length / PAGE));
+    page = Math.min(page, pages - 1);
+    const recent = document.getElementById('recent');
+    const slice = list.slice(page * PAGE, page * PAGE + PAGE);
+    if (!slice.length) empty(recent, 6, 'No commands yet.');
+    else recent.replaceChildren(...slice.map(r => {
+      const tr = el('tr'), target = el('td');
+      if (r.tab) target.append(el('span', `[${r.tab}]`, 'tabname'));
+      target.append(document.createTextNode(r.target || ''));
+      const who = el('td', r.client || '?'); who.style.whiteSpace = 'nowrap';
+      tr.append(el('td', r.time), who, el('td', r.action), target, el('td', r.ms, 'num'),
+        el('td', r.ok ? 'ok' : (r.error || 'failed'), r.ok ? null : 'err'));
+      return tr;
+    }));
+    document.getElementById('pg-info').textContent = list.length
+      ? `${page * PAGE + 1}-${Math.min(list.length, page * PAGE + PAGE)} of ${list.length} (last 200 kept)` : '';
+    document.getElementById('pg-prev').disabled = page === 0;
+    document.getElementById('pg-next').disabled = page >= pages - 1;
+    document.getElementById('c-commands').textContent = data.requests.total;
+
+    const bc = document.getElementById('byclient');
+    const cpairs = Object.entries(data.requests.byClient || {}).sort((a, b) => b[1] - a[1]);
+    if (!cpairs.length) bc.replaceChildren(el('span', 'None yet', 'empty'));
+    else bc.replaceChildren(...cpairs.map(([k, v]) => el('span', `${k} ${v}`)));
+
+    const chips = document.getElementById('byaction');
+    const pairs = Object.entries(data.requests.byAction || {}).sort((a, b) => b[1] - a[1]);
+    if (!pairs.length) chips.replaceChildren(el('span', 'None yet', 'empty'));
+    else chips.replaceChildren(...pairs.map(([k, v]) => el('span', `${k} ${v}`)));
+  }
+  document.getElementById('pg-prev').onclick = () => { page--; renderCommands(); };
+  document.getElementById('pg-next').onclick = () => { page++; renderCommands(); };
+
+  // ---- access: waiting requests (Approve / Deny) and approved clients (Revoke) ----
+  async function accessAction(path, body, what) {
+    try {
+      const res = await statusAction(path, body);
+      if (!res.success) alert(`Not ${what}: ` + (res.error || 'unknown error'));
+    } catch (e) { alert(`Not ${what}: ` + e); }
+    poll();
+  }
+  let accessSig = '';
+  function renderAccess(ac) {
+    const n = ac.pending.length;
+    const banner = document.getElementById('accessbanner');
+    banner.style.display = n ? 'block' : 'none';
+    document.getElementById('accessbanner-text').textContent =
+      n === 1 ? `${ac.pending[0].client} wants to use this browser.` : `${n} clients want to use this browser.`;
+    const count = document.getElementById('c-access');
+    count.textContent = n ? n : '';
+    count.className = 'count' + (n ? ' alert' : '');
+
+    const sig = JSON.stringify([ac.pending.map(p => [p.ref, p.client, p.requested, p.replaces]), ac.clients]);
+    if (sig === accessSig) return;   // rebuild only on change, so a button isn't replaced mid-click
+    accessSig = sig;
+
+    const pend = document.getElementById('pending');
+    if (!n) empty(pend, 3, 'Nobody is waiting.');
+    else pend.replaceChildren(...ac.pending.map(p => {
+      const tr = el('tr'), who = el('td');
+      who.append(el('div', p.client, 'title'));
+      if (p.replaces) who.append(el('div', 'Already approved. Approving gives it a new key; the old key stops working.', 'small'));
+      const ok = el('button', 'Approve', 'primary'), no = el('button', 'Deny', 'close');
+      ok.type = no.type = 'button';
+      ok.onclick = () => accessAction('/status/approve', { ref: p.ref }, 'approved');
+      no.onclick = () => accessAction('/status/deny', { ref: p.ref }, 'denied');
+      const act = el('td'), box = el('div', null, 'acts'); box.append(ok, no); act.append(box);
+      tr.append(who, el('td', p.requested), act);
+      return tr;
+    }));
+
+    const cl = document.getElementById('clients');
+    if (!ac.clients.length) empty(cl, 4, 'No clients approved yet.');
+    else cl.replaceChildren(...ac.clients.map(c => {
+      const tr = el('tr'), btn = el('button', 'Revoke', 'close');
+      btn.type = 'button';
+      btn.onclick = () => {
+        if (confirm(`Revoke ${c.name}?\n\nIts key stops working at once. It would have to ask again and be approved.`))
+          accessAction('/status/revoke', { client: c.name }, 'revoked');
+      };
+      const act = el('td'); act.append(btn);
+      tr.append(el('td', c.name, 'title'), el('td', c.approved), el('td', c.lastUsed || 'never'), act);
+      return tr;
+    }));
+  }
+
+  // ---- instance switcher: this one highlighted, running ones link to their own status page ----
+  let instSig = '';
+  const starting = {};   // instance name -> when Start was clicked (shown as "starting" for up to 2 minutes)
+  async function startInstance(i) {
+    starting[i.name] = Date.now(); instSig = ''; renderInstances(data.instances || [], data.server.instance);
+    try {
+      const res = await statusAction('/status/startinstance', { name: i.name });
+      if (!res.success) { delete starting[i.name]; alert(`${i.label} not started: ` + (res.error || 'unknown error')); }
+    } catch (e) { delete starting[i.name]; alert(`${i.label} not started: ` + e); }
+    instSig = ''; poll();
+  }
+  function renderInstances(list, current) {
+    for (const i of list) if (i.running || Date.now() - (starting[i.name] || 0) > 120000) delete starting[i.name];
+    const sig = JSON.stringify([list, Object.keys(starting)]);
+    if (sig === instSig) return;   // rebuild only on change, so a button isn't replaced mid-click
+    instSig = sig;
+    const box = document.getElementById('instances');
+    box.style.display = 'flex';
+    const pills = list.map(i => {
+      const here = i.name === current;
+      let node;
+      if (here) {
+        node = el('span', null, 'inst cur'); node.title = `This instance (port ${i.port})`;
+        node.append(el('span', null, 'dot'), el('span', i.label));
+      } else if (i.running) {
+        node = el('a', null, 'inst'); node.href = `http://127.0.0.1:${i.port}/status`;
+        node.title = `Open the ${i.label} status page (port ${i.port})`;
+        node.append(el('span', null, 'dot'), el('span', i.label));
+      } else if (starting[i.name]) {
+        node = el('span', null, 'inst off starting'); node.title = `Starting ${i.label} (port ${i.port})...`;
+        node.append(el('span', null, 'dot'), el('span', `${i.label} · starting`));
+      } else {
+        node = el('button', null, 'inst'); node.type = 'button';
+        node.title = `Not running. Click to start ${i.label} (port ${i.port}); its Chrome window opens.`;
+        node.append(el('span', null, 'dot'), el('span', i.label), el('span', 'Start', 'go'));
+        node.onclick = () => startInstance(i);
+      }
+      return node;
+    });
+    const add = el('button', '+ New', 'inst add'); add.type = 'button';
+    add.title = 'Create another instance (its own Chrome profile and port)';
+    add.onclick = () => {
+      document.getElementById('newinst').style.display = 'flex';
+      document.getElementById('profbox').style.display = 'block';
+      document.getElementById('ni-name').focus();
+      loadProfiles();
+    };
+    box.replaceChildren(el('span', 'Instances', 'lbl'), ...pills, add);
+  }
+
+  document.getElementById('ni-cancel').onclick = () => {
+    document.getElementById('newinst').style.display = 'none';
+    document.getElementById('profbox').style.display = 'none';
+  };
+
+  // ---- leftover profiles (loaded when the New form opens) ----
+  async function loadProfiles() {
+    const lt = document.getElementById('leftovers');
+    let p;
+    try { p = await (await fetch('/status/profiles.json', { cache: 'no-store' })).json(); }
+    catch (e) { empty(lt, 4, "Couldn't load: " + e); return; }
+
+    if (!p.leftovers.length) empty(lt, 4, 'None.');
+    else lt.replaceChildren(...p.leftovers.map(l => {
+      const tr = el('tr'), act = el('td'), box = el('div', null, 'acts');
+      const rs = el('button', 'Restore', 'primary'); rs.type = 'button';
+      rs.title = `Recreate the '${l.name}' instance on a free port, with this profile and its logins`;
+      rs.onclick = async () => {
+        try {
+          const res = await statusAction('/status/newinstance', { name: l.name, label: '' });
+          if (!res.success) { alert('Not restored: ' + (res.error || 'unknown error')); return; }
+          starting[res.name] = Date.now(); instSig = ''; poll(); loadProfiles();
+        } catch (e) { alert('Not restored: ' + e); }
+      };
+      const del = el('button', 'Delete', 'close'); del.type = 'button'; del.disabled = l.inUse;
+      del.title = l.inUse ? 'A Chrome window is using it' : 'Move this folder to _deleted (removed for good after 30 days)';
+      del.onclick = async () => {
+        if (!confirm(`Delete the '${l.name}' profile (${l.sizeMB} MB)?\n\nIts logins, logs and saved keys go with it. The folder is kept in _deleted for 30 days in case you change your mind.`)) return;
+        try {
+          const res = await statusAction('/status/deleteprofile', { name: l.name });
+          if (!res.success) alert('Not deleted: ' + (res.error || 'unknown error'));
+        } catch (e) { alert('Not deleted: ' + e); }
+        loadProfiles();
+      };
+      box.append(rs, del); act.append(box);
+      tr.append(el('td', l.name + (l.inUse ? ' (in use)' : ''), 'title'), el('td', `${l.sizeMB} MB`), el('td', l.lastUsed), act);
+      return tr;
+    }));
+  }
+  document.getElementById('newinst').addEventListener('submit', async e => {
+    e.preventDefault();
+    const name = document.getElementById('ni-name'), label = document.getElementById('ni-label');
+    const msg = document.getElementById('ni-msg'), btn = e.submitter;
+    btn.disabled = true; msg.className = 'small'; msg.textContent = 'Creating...';
+    try {
+      const res = await statusAction('/status/newinstance', { name: name.value.trim(), label: label.value.trim() });
+      if (res.success) {
+        starting[res.name] = Date.now(); instSig = '';
+        msg.textContent = `${res.message} Its status page: http://127.0.0.1:${res.port}/status`;
+        name.value = ''; label.value = '';
+      } else { msg.className = 'small err'; msg.textContent = 'Not created: ' + (res.error || 'unknown error'); }
+    } catch (err) { msg.className = 'small err'; msg.textContent = 'Not created: ' + err; }
+    btn.disabled = false;
+    poll();
+  });
+
+  function render() {
+    if (!data) return;
+    const sv = data.server, ka = data.keepAlive, rq = data.requests, br = data.browser;
+    const up = sv.uptimeSeconds + (Date.now() - fetchedAt) / 1000;
+    document.getElementById('heading').textContent = `CWeb · ${sv.label}`;
+    document.title = `CWeb ${sv.label} Status`;
+    document.getElementById('server').textContent = `version ${sv.version} · instance ${sv.instance} · port ${sv.port}${sv.configuredPort && sv.configuredPort !== sv.port ? ` (${sv.configuredPort} was in use)` : ''} · data ${sv.dataRoot}`;
+    document.getElementById('server').title = `Profile: ${sv.profile}`;
+    document.querySelectorAll('.dataroot').forEach(e => { e.textContent = sv.dataRoot; });
+    renderInstances(data.instances || [], sv.instance);
+    renderAccess(data.access || { pending: [], clients: [] });
+    const se = document.getElementById('starterr');
+    se.textContent = br.startError ? `Chrome didn't start: ${br.startError}` : '';
+    se.style.display = br.startError ? 'block' : 'none';
+    document.getElementById('ka').replaceChildren(
+      el('span', ka.enabled ? `keep-alive on · ${ka.sites.length} site profiles` : 'keep-alive off', 'pill ' + (ka.enabled ? 'ok' : 'warn')));
+    document.getElementById('uptime').textContent = uptime(up);
+    document.getElementById('started').textContent = 'since ' + sv.started;
+    document.getElementById('reqs').textContent = rq.total;
+    document.getElementById('errs').textContent = rq.errors ? `${rq.errors} failed` : 'no failures';
+    document.getElementById('errs').className = 'small' + (rq.errors ? ' err' : '');
+    document.getElementById('tabs').textContent = br.running ? `${br.tabCount} tab${br.tabCount === 1 ? '' : 's'}` : 'Not running';
+    const working = new Set(Object.values(data.tabUse || {}).flatMap(x => x.users)).size;
+    document.getElementById('current').textContent = br.running
+      ? (working ? `${working} client${working === 1 ? '' : 's'} working` : 'no clients yet') : 'Not running.';
+
+    renderCommands();
+
+    renderKaAdmin(ka);
+    const ev = document.getElementById('events');
+    if (!ka.events.length) ev.replaceChildren(el('li', 'Nothing renewed yet.', 'empty'));
+    else ev.replaceChildren(...ka.events.map(e => {
+      const li = el('li'); li.append(el('time', e.time), el('span', e.message, e.warn ? 'err' : null)); return li;
+    }));
+    renderSessions();
+  }
+
+  async function poll() {
+    try {
+      const r = await fetch('/status.json', { cache: 'no-store' });
+      if (!r.ok) throw new Error(r.status);
+      data = await r.json(); fetchedAt = Date.now();
+      document.getElementById('offline').style.display = 'none';
+      render();
+    } catch (e) {
+      document.getElementById('offline').style.display = 'block';
+    }
+  }
+  poll();
+  setInterval(poll, 2000);
+  setInterval(() => { if (data) tickCountdowns(); }, 1000);
+</script>
+</body>
+</html>

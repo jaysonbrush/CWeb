@@ -1,0 +1,30 @@
+# CWeb .gitignore
+# Per-instance data (profiles, keys, approvals, logs) lives in %LOCALAPPDATA%\CWeb\, outside this folder.
+# These rules are a second line of defence in case any of it ends up here.
+
+# Secrets and per-machine state: never commit
+config.json
+*.key
+*.ticket
+approvals.json
+server.json
+keepalive-sites.json
+keepalive-requests.json
+
+# Logs
+logs/
+*.log
+
+# Chrome for Testing, ChromeDriver, Selenium and their backups (~500 MB).
+# A fresh checkout gets them with: pwsh -File browser\Update-Browser.ps1 -UpdateSelenium
+browser/chrome-win64/
+browser/chromedriver-win64/
+browser/Selenium/
+browser/backup/
+browser/temp_update/
+
+
+# Scratch
+*.tmp
+.playwright-mcp/
+

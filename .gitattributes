@@ -1,0 +1,3 @@
+# Bash scripts must keep LF line endings, or Git Bash fails on the CR ("$'\r': command not found") after a
+# checkout with core.autocrlf=true.
+*.sh text eol=lf
