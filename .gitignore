@@ -1,5 +1,5 @@
 # CWeb .gitignore
-# Per-instance data (profiles, keys, approvals, logs) lives in %LOCALAPPDATA%\CWeb\, outside this folder.
+# Per-instance data (profiles, keys, approvals, logs) lives in %USERPROFILE%\CWebData\, outside this folder.
 # These rules are a second line of defence in case any of it ends up here.
 
 # Secrets and per-machine state: never commit

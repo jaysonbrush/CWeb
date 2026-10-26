@@ -6,7 +6,7 @@
 #
 # Connect-CWeb finds the instance's server (starting it if it's down), reuses the client's saved key if it still
 # works, and otherwise asks for access and waits for the user to approve it on the status page. The key is saved in
-# %LOCALAPPDATA%\CWeb\<instance>\clients\<client>.key, so later sessions with the same client name connect with no
+# %USERPROFILE%\CWebData\<instance>\clients\<client>.key, so later sessions with the same client name connect with no
 # click. Keys are never printed.
 #
 # Run as a script (used by cweb.sh), it prints JSON and exits 0 connected, 3 still waiting, 4 denied, 1 error:

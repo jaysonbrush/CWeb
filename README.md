@@ -18,9 +18,11 @@ Setup downloads the pinned Chrome for Testing, ChromeDriver and Selenium (the ve
 same on every machine), creates the data folder and checks itself. Run it again any time; it only fixes what's
 missing. The examples use `C:\CWeb`; CWeb runs from any folder, and setup prints the exact paths for your machine.
 
-- **Where your data lives:** one folder outside the repo, `%LOCALAPPDATA%\CWeb` (profiles and sign-ins, agent keys,
+- **Where your data lives:** one folder outside the repo, `%USERPROFILE%\CWebData` (profiles and sign-ins, agent keys,
   logs, instances you added). `Setup-CWeb.ps1 -DataRoot D:\CWebData` moves it. Never inside the repo, so git can't
-  delete or upload it.
+  delete or upload it, and not under AppData, which the Claude desktop app redirects.
+- **Upgrading from 2026.10.26.014 or earlier:** those kept the data in `%LOCALAPPDATA%\CWeb`. Stop every instance,
+  `git pull`, and run `Setup-CWeb.cmd` again: it moves the data (sign-ins, keys, approvals) to the new folder.
 - **Remove everything:** `Setup-CWeb.ps1 -Uninstall` lists what CWeb stored; `-Uninstall -Yes` removes it.
 - **New Chrome version:** run `browser\Update-Browser.ps1 -UpdateSelenium` on one machine, test, commit
   `browser\version.json`; the other machines pull and run setup.

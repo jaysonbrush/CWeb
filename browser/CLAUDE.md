@@ -46,7 +46,7 @@ Chrome-Stop -Browser $browser
 ### Browser Lifecycle
 | Function | Description |
 |----------|-------------|
-| `Chrome-Start [-Hidden $true] [-Persist $true] [-ProfileName n] [-UserDataPath p] [-WorkRoot d] [-WindowName t]` | Launch Chrome. Returns `$browser` hashtable. Profiles and temp folders live in `-WorkRoot` (default `%LOCALAPPDATA%\CWeb\scripts`); `-Persist $true` reuses `<WorkRoot>\<ProfileName>` (default `profile`) or `-UserDataPath`. |
+| `Chrome-Start [-Hidden $true] [-Persist $true] [-ProfileName n] [-UserDataPath p] [-WorkRoot d] [-WindowName t]` | Launch Chrome. Returns `$browser` hashtable. Profiles and temp folders live in `-WorkRoot` (default `%USERPROFILE%\CWebData\scripts`); `-Persist $true` reuses `<WorkRoot>\<ProfileName>` (default `profile`) or `-UserDataPath`. |
 | `Chrome-Stop -Browser $b` | Close browser and clean up temp files. |
 
 ### Navigation

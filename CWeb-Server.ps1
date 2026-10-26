@@ -5,7 +5,7 @@
 
 .DESCRIPTION
     One server per instance (instances.json). Each instance has its own port, Chrome profile, logs and
-    state in %LOCALAPPDATA%\CWeb\<instance>\, and only one server per instance can run.
+    state in %USERPROFILE%\CWebData\<instance>\, and only one server per instance can run.
     The server opens Chrome itself on start. Uses the core browser module (.\browser\Browser-Functions.ps1).
 
 .EXAMPLE
@@ -38,7 +38,7 @@ if (-not $script:HaveLock) {
     exit 2
 }
 
-# ---- Logging: %LOCALAPPDATA%\CWeb\<instance>\logs\server-<date>.log (whole console) + chromedriver-<date>.log ----
+# ---- Logging: %USERPROFILE%\CWebData\<instance>\logs\server-<date>.log (whole console) + chromedriver-<date>.log ----
 # Logs older than 7 days are deleted on each launch.
 $script:LogDir = $script:Inst.LogDir
 New-Item -ItemType Directory -Path $script:LogDir -Force | Out-Null

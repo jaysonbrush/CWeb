@@ -3,9 +3,13 @@
 # Must also run in Windows PowerShell 5.1 (no -AsHashtable, no ?? or ternaries).
 #
 # Data folder: everything CWeb stores on this machine (profiles, keys, logs, machine-added instances) lives in one
-# folder outside the repo: %LOCALAPPDATA%\CWeb, or the folder in the user environment variable CWEB_DATA (set by
+# folder outside the repo: %USERPROFILE%\CWebData, or the folder in the user environment variable CWEB_DATA (set by
 # Setup-CWeb.ps1 -DataRoot). The registry value is read each time, so a change applies at once, even to processes
 # started before it.
+# Not under AppData: packaged (MSIX) apps such as the Claude desktop app redirect AppData writes into a private copy,
+# so an agent started from the app and a server started from Explorer would each see a different data folder.
+# Installs from before 2026.10.26.015 used %LOCALAPPDATA%\CWeb; that folder is still used while the new one doesn't
+# exist, and Setup-CWeb.ps1 moves it.
 #
 # Instances: instances.json in the repo holds the defaults (in git); <data folder>\instances.json holds the ones this
 # machine added (+ New on the status page); the "instances" section of <data folder>\config.json holds the user's own
@@ -17,10 +21,17 @@
 #   instances     per-instance overrides, e.g. { "work": { "port": 9480 } }
 # The port a server really listens on is in its server.json; clients read it from there.
 
+function Get-CWebDefaultDataRoot { return Join-Path $env:USERPROFILE 'CWebData' }
+function Get-CWebLegacyDataRoot  { return Join-Path $env:LOCALAPPDATA 'CWeb' }   # before 2026.10.26.015
+
 function Get-CWebDataRoot {
     $v = [Environment]::GetEnvironmentVariable('CWEB_DATA', 'User')
     if (-not $v) { $v = $env:CWEB_DATA }
-    if (-not $v) { $v = Join-Path $env:LOCALAPPDATA 'CWeb' }
+    if (-not $v) {
+        $v = Get-CWebDefaultDataRoot
+        $legacy = Get-CWebLegacyDataRoot
+        if (-not (Test-Path $v) -and (Test-Path $legacy)) { $v = $legacy }
+    }
     return $v.TrimEnd('\')
 }
 

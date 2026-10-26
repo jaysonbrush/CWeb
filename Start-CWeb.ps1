@@ -1,7 +1,7 @@
 # Start-CWeb.ps1
 # One-click launcher: starts a CWeb instance's server (unless it's already running) and waits until its Chrome
 # window is open. The server opens Chrome itself, so the launcher needs no API key: it only reads the status page.
-# Used by Start-CWeb.cmd. Logs to %LOCALAPPDATA%\CWeb\<instance>\logs\launcher-<date>.log.
+# Used by Start-CWeb.cmd. Logs to %USERPROFILE%\CWebData\<instance>\logs\launcher-<date>.log.
 #   .\Start-CWeb.ps1              -> the 'work' instance
 #   .\Start-CWeb.ps1 -Instance personal
 

@@ -8,7 +8,7 @@
 # Prints the server's JSON reply. Exit codes: 0 ok, 3 still waiting for approval, 4 denied,
 # 5 not connected / key revoked (run connect), 1 other error.
 # The key is read from <data folder>\<instance>\clients\<client>.key (data folder: CWEB_DATA, else
-# %LOCALAPPDATA%\CWeb) and passed to curl on stdin,
+# %USERPROFILE%\CWebData) and passed to curl on stdin,
 # so it never appears on a command line or in output.
 
 set -u
@@ -26,10 +26,14 @@ if [ "$what" = "connect" ]; then
 fi
 
 # Data folder: the user variable CWEB_DATA (read from the registry, so a change applies at once), else
-# %LOCALAPPDATA%\CWeb. Same rule as Get-CWebDataRoot in CWeb-Common.ps1.
+# %USERPROFILE%\CWebData (or the old %LOCALAPPDATA%\CWeb while only that exists). Same rule as Get-CWebDataRoot in
+# CWeb-Common.ps1.
 root="$(MSYS_NO_PATHCONV=1 reg query 'HKCU\Environment' /v CWEB_DATA 2>/dev/null | tr -d '\r' | sed -n 's/^ *CWEB_DATA *REG_[A-Z_]* *//p')"
 [ -n "$root" ] || root="${CWEB_DATA:-}"
-[ -n "$root" ] || root="$LOCALAPPDATA\\CWeb"
+if [ -z "$root" ]; then
+    root="$USERPROFILE\\CWebData"
+    [ ! -d "$(cygpath -u "$root")" ] && [ -d "$(cygpath -u "$LOCALAPPDATA\\CWeb")" ] && root="$LOCALAPPDATA\\CWeb"
+fi
 root="$(cygpath -u "$root")"; root="${root%/}"
 
 data="$root/$inst"

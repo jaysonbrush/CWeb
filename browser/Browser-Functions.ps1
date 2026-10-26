@@ -35,7 +35,11 @@ function Get-ChromeWorkRoot {
         # CWeb's data folder (same rule as Get-CWebDataRoot in CWeb-Common.ps1), then \scripts.
         $root = [Environment]::GetEnvironmentVariable('CWEB_DATA', 'User')
         if (-not $root) { $root = $env:CWEB_DATA }
-        if (-not $root) { $root = Join-Path $env:LOCALAPPDATA 'CWeb' }
+        if (-not $root) {
+            $root = Join-Path $env:USERPROFILE 'CWebData'
+            $legacy = Join-Path $env:LOCALAPPDATA 'CWeb'   # before CWeb 2026.10.26.015
+            if (-not (Test-Path $root) -and (Test-Path $legacy)) { $root = $legacy }
+        }
         $WorkRoot = Join-Path $root.TrimEnd('\') 'scripts'
     }
     New-Item -ItemType Directory -Path $WorkRoot -Force | Out-Null
@@ -74,7 +78,7 @@ function Chrome-Start {
         [bool]$Persist = $False,
         [string]$ProfileName = "profile",   # saved profile folder name under WorkRoot (used when UserDataPath isn't given)
         [string]$UserDataPath,              # full path of the saved profile (CWeb passes the instance's profile)
-        [string]$WorkRoot,                  # folder for profiles and temp files (default %LOCALAPPDATA%\CWeb\scripts)
+        [string]$WorkRoot,                  # folder for profiles and temp files (default <CWeb data folder>\scripts)
         [string]$WindowName,                # shown in front of the page title in the window's title bar and taskbar (e.g. "CWeb Work")
         [bool]$IsRetry = $False,
         [bool]$Stealth = $True

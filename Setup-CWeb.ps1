@@ -6,8 +6,8 @@
 .DESCRIPTION
     - Installs the exact Chrome for Testing, ChromeDriver and Selenium versions pinned in browser\version.json, so
       every machine runs the same tested versions. Skips what's already right; safe to run again.
-    - Creates the data folder (default %LOCALAPPDATA%\CWeb): profiles, keys, logs and this machine's own instances
-      live there, never in the repo folder.
+    - Creates the data folder (default %USERPROFILE%\CWebData): profiles, keys, logs and this machine's own instances
+      live there, never in the repo folder. An older install's %LOCALAPPDATA%\CWeb is moved there.
     - Checks itself: Test-CWeb, then a short headless start and stop of the 'test' instance.
 
     Runs from any folder; it prints the exact paths for this machine at the end.
@@ -102,9 +102,16 @@ if ($Uninstall) {
 # ================================ Data folder ================================
 Step 'Data folder'
 $current = Get-CWebDataRoot
+# Installs from before 2026.10.26.015 kept the data under AppData, which packaged apps (the Claude desktop app) redirect
+# into a private copy. Move it to the new default, unless the user chose a folder with CWEB_DATA.
+$chosen = [Environment]::GetEnvironmentVariable('CWEB_DATA', 'User'); if (-not $chosen) { $chosen = $env:CWEB_DATA }
+if (-not $DataRoot -and -not $chosen -and $current -eq (Get-CWebLegacyDataRoot).TrimEnd('\')) {
+    Say "  The data folder is still the old $current (under AppData); moving it to $(Get-CWebDefaultDataRoot)." Yellow
+    $DataRoot = Get-CWebDefaultDataRoot
+}
 if ($DataRoot) {
     $new = Test-SafeDataRoot $DataRoot
-    $default = Join-Path $env:LOCALAPPDATA 'CWeb'
+    $default = Get-CWebDefaultDataRoot
     if ($new -ne $current) {
         $running = Get-RunningCWebServers
         if ($running.Count) { throw "Stop every CWeb instance first (status page: Stop server); the data folder can't move while one runs." }

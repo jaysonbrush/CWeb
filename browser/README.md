@@ -136,5 +136,5 @@ Chrome-Stop -Browser $browser
 
 This module is the core of **CWeb** (the folder above this one), the shared browser server Claude agents use while
 you handle logins and sensitive input. Scripts that use this module directly keep their profiles in
-`<CWeb data folder>\scripts` (default `%LOCALAPPDATA%\CWeb\scripts`). On a new machine, run CWeb's `Setup-CWeb.cmd`
+`<CWeb data folder>\scripts` (default `%USERPROFILE%\CWebData\scripts`). On a new machine, run CWeb's `Setup-CWeb.cmd`
 first: it downloads the pinned Chrome, ChromeDriver and Selenium this module needs.

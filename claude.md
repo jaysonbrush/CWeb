@@ -286,10 +286,18 @@ In this folder (the repo):
 | `skills\cweb\SKILL.md` | Claude skill for agents using CWeb: copy the `cweb` folder into a Claude skills folder (e.g. `%USERPROFILE%\.claude\skills\`) |
 | `VERSION` | The version (history at the end of this file) |
 
-Everything CWeb stores on a machine is in **one data folder outside the repo**: `%LOCALAPPDATA%\CWeb`, or the folder
+Everything CWeb stores on a machine is in **one data folder outside the repo**: `%USERPROFILE%\CWebData`, or the folder
 in the user environment variable `CWEB_DATA` (set with `Setup-CWeb.ps1 -DataRoot`; read from the registry each time,
 so a change applies at once). It's never inside the repo, so `git clean`, a re-clone or a synced folder can't lose or
-leak sign-ins and keys. The status page header shows it. In it:
+leak sign-ins and keys. The status page header shows it.
+
+It's deliberately **not under AppData**: packaged (MSIX) apps such as the Claude desktop app redirect AppData writes
+into a private copy, so agents started from the app and a server started from Explorer would see different folders
+(the agents wouldn't find the server or their keys). Installs from before 2026.10.26.015 used `%LOCALAPPDATA%\CWeb`;
+CWeb keeps using it while `%USERPROFILE%\CWebData` doesn't exist, and running `Setup-CWeb.cmd` moves it (stop every
+instance first; a `CWEB_DATA` folder you chose is left alone).
+
+In it:
 
 - `config.json`: this machine's settings (port fallback, `firstPort`, per-instance overrides such as a custom port).
 - `instances.json`: instances this machine added.
@@ -343,5 +351,6 @@ CWeb writes nothing outside the data folder and the repo's `browser\` downloads.
 
 | Version | Changes |
 |---|---|
+| 2026.10.26.015 | Data folder default moved from `%LOCALAPPDATA%\CWeb` to `%USERPROFILE%\CWebData`: the Claude desktop app (MSIX) redirects AppData, so agents and the server saw different folders. Old folder still used until `Setup-CWeb.cmd` moves it. |
 | 2026.10.26.014 | Settings file `<data folder>\config.json`: custom port per instance, `portFallback` (next free port when one is taken), `firstPort`. Clients find a moved server through `server.json`. Setup's location note fixed. |
 | 2026.10.26.013 | First public release. |
