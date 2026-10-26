@@ -21,11 +21,30 @@ missing. The examples use `C:\CWeb`; CWeb runs from any folder, and setup prints
 - **Where your data lives:** one folder outside the repo, `%USERPROFILE%\CWebData` (profiles and sign-ins, agent keys,
   logs, instances you added). `Setup-CWeb.ps1 -DataRoot D:\CWebData` moves it. Never inside the repo, so git can't
   delete or upload it, and not under AppData, which the Claude desktop app redirects.
-- **Upgrading from 2026.10.26.014 or earlier:** those kept the data in `%LOCALAPPDATA%\CWeb`. Stop every instance,
-  `git pull`, and run `Setup-CWeb.cmd` again: it moves the data (sign-ins, keys, approvals) to the new folder.
 - **Remove everything:** `Setup-CWeb.ps1 -Uninstall` lists what CWeb stored; `-Uninstall -Yes` removes it.
 - **New Chrome version:** run `browser\Update-Browser.ps1 -UpdateSelenium` on one machine, test, commit
-  `browser\version.json`; the other machines pull and run setup.
+  `browser\version.json`; the other machines run `Update-CWeb.cmd`.
+
+## Update
+
+Double-click `Update-CWeb.cmd` (or run `C:\CWeb\Update-CWeb.cmd`). It:
+
+1. Checks for a new version. If there's none, it stops nothing and exits.
+2. Lists the running instances and the agents working in them, and **asks before stopping them**: stopping closes
+   their Chrome windows (sign-ins are kept) and interrupts those agents.
+3. Stops them cleanly, pulls the new version (`git pull --ff-only`: it never overwrites changes you made here),
+   runs setup (new Chrome if the pin changed, data moves, self-check), and starts again the instances that were
+   running.
+
+`Update-CWeb.cmd -Yes` does the same without asking, for scripts. What changed in each version is at the end of
+[`claude.md`](claude.md).
+
+- **First update from 2026.10.26.015 or earlier:** those versions don't have `Update-CWeb.cmd` yet. Stop every
+  instance (status page: **Stop server**), run `git pull`, then `Setup-CWeb.cmd`. From then on, use
+  `Update-CWeb.cmd`.
+- **From 2026.10.26.014 or earlier**, setup also moves the data from the old `%LOCALAPPDATA%\CWeb` to
+  `%USERPROFILE%\CWebData` (sign-ins, keys and approvals come along).
+- **Installed from a zip, not git:** download the new version over the folder, then run `Setup-CWeb.cmd`.
 
 ## Use it
 

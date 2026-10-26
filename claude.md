@@ -18,7 +18,11 @@ from `browser\version.json` (same versions on every machine), unblocks the files
 itself (a short headless start of the `test` instance). Safe to run again; it skips what's already right.
 
 - **Upgrading Chrome** is deliberate: on one machine run `browser\Update-Browser.ps1 -UpdateSelenium` (with every
-  instance stopped), test, commit `browser\version.json`. Other machines `git pull` and run setup again.
+  instance stopped), test, commit `browser\version.json`. Other machines run `Update-CWeb.cmd`.
+- **Updating CWeb:** `Update-CWeb.cmd` checks for a new version (nothing to do: it stops nothing), lists the running
+  instances and the agents in their tabs, asks before stopping them (`-Yes`: doesn't ask), stops them cleanly,
+  `git pull --ff-only` (refuses if CWeb files were changed locally), runs setup, and starts again the instances that
+  were running. Agents: only when the user asks; it interrupts every client.
 - **Data folder elsewhere:** `Setup-CWeb.ps1 -DataRoot D:\CWebData` (moves existing data; every instance stopped).
 - **Remove:** `Setup-CWeb.ps1 -Uninstall` lists everything CWeb stored on the machine; `-Uninstall -Yes` removes the
   data folder, the `CWEB_DATA` setting and the downloaded Chrome files. The repo folder itself is left for you.
@@ -277,6 +281,7 @@ In this folder (the repo):
 | `CWeb-Profiles.ps1` | Leftover profiles |
 | `CWeb-Client.ps1`, `cweb.sh` | How agents and scripts connect |
 | `Setup-CWeb.cmd`, `Setup-CWeb.ps1` | Setup on a machine (pinned Chrome/ChromeDriver/Selenium, data folder, self-check); `-DataRoot`, `-Uninstall` |
+| `Update-CWeb.cmd`, `Update-CWeb.ps1` | Update: asks, stops running instances cleanly, pulls, runs setup, restarts them; `-Yes` |
 | `Start-CWeb.cmd`, `Start-CWeb.ps1` | Launcher |
 | `Test-CWeb.ps1` | Checks the files and the instance lists; changes nothing |
 | `instances.json` | The default instances (no secrets); a machine's own are in the data folder |
@@ -351,6 +356,7 @@ CWeb writes nothing outside the data folder and the repo's `browser\` downloads.
 
 | Version | Changes |
 |---|---|
+| 2026.10.26.016 | `Update-CWeb.cmd`: asks before stopping running instances (`-Yes` to skip), stops them cleanly, pulls, runs setup, restarts what was running. README **Update** section. |
 | 2026.10.26.015 | Data folder default moved from `%LOCALAPPDATA%\CWeb` to `%USERPROFILE%\CWebData`: the Claude desktop app (MSIX) redirects AppData, so agents and the server saw different folders. Old folder still used until `Setup-CWeb.cmd` moves it. |
 | 2026.10.26.014 | Settings file `<data folder>\config.json`: custom port per instance, `portFallback` (next free port when one is taken), `firstPort`. Clients find a moved server through `server.json`. Setup's location note fixed. |
 | 2026.10.26.013 | First public release. |
