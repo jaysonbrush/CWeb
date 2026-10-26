@@ -169,7 +169,8 @@ Refreshes every 2 seconds.
   session time left, and **Close**.
 - **Commands:** the last 200 commands with client, tab, target, time and result; counts by client and action. Never
   typed text, scripts or cookie values.
-- **Keep-alive:** drafts waiting for review, requests, site profiles with per-instance On/Off, renewals and warnings.
+- **Keep-alive:** requests, site profiles with per-instance On/Off, renewals and warnings (and drafts left from
+  before 2026.10.26.018, to enable or discard).
 - **Access:** requests waiting for approval (**Approve** / **Deny**; a banner shows on every tab while anyone waits)
   and approved clients with last use and **Revoke**.
 
@@ -209,7 +210,7 @@ Refreshes every 2 seconds.
 | Alerts | `acceptalert` (`promptText`) / `dismissalert` / `getalerttext` | | |
 | Cookies | `getcookies` (`name`) / `setcookie` (`name`, `value`, `domain`, `path`) / `deletecookie` (`name`) | | |
 | Window | `getwindowsize` / `setwindowsize` (`width`, `height`) / `maximize` | | Affects everyone's window. |
-| Keep-alive | `keepalive` | `op`: `status` / `on` / `off` / `check` / `requests` / `drafts` / `draft` / `decline` | See **Session keep-alive**. |
+| Keep-alive | `keepalive` | `op`: `status` / `on` / `off` / `check` / `requests` / `install` / `decline` | See **Session keep-alive**. |
 
 Locators (`by`): `Id`, `Name`, `ClassName`, `TagName`, `CssSelector`, `XPath`, `LinkText`, `PartialLinkText`.
 
@@ -239,11 +240,12 @@ sessions don't time out while you work elsewhere. On by default; nothing to star
 - **Per instance on/off:** the user can switch a site off for one instance on the status page; its tabs are then
   recognised but never probed or renewed.
 
-**CWeb ships with no site profiles.** Each machine builds its own: the user clicks **Keep alive** on a tab, which
-files a request. When they ask you to "work the CWeb keep-alive requests", follow **`KEEPALIVE.md`**: study the site
-read-only, prove a renewal works, and submit a **draft** (`keepalive` `op: draft`). Drafts sit in
-`<data folder>\keepalive\drafts\` and never run until the user clicks **Enable**, which moves the draft into
-`<data folder>\keepalive\`. If there's no safe way, `op: decline` with a note. Don't write profile files yourself.
+Each machine builds its own profiles: the user clicks **Keep alive** on a tab, which files a request. You hear about
+open requests when you `connect` (`keepAliveRequests` in the reply), or when the user asks you to "work the CWeb
+keep-alive requests". Follow **`KEEPALIVE.md`**: find how the site's session expires, write the profile and install
+it (`keepalive` `op: install`). The server runs `probe()` once on an open tab of the site and, if that works, the
+profile is **live at once** (the user can switch it off on the status page). If there's no way, `op: decline` with a
+note. Don't write profile files yourself.
 
 Profile format, for reference:
 
@@ -265,7 +267,9 @@ credentials, no customer data.
 
 - Nothing can use an instance's API without a key from the user's **Approve**. Keys are per client, random, handed out
   once, and stored by the server only as SHA-256 fingerprints (`approvals.json`). An approval lasts until **Revoke**,
-  across restarts. Asking again with an approved name and being approved replaces the old key.
+  across restarts. All sessions of one client share its key file, so one approval covers them; a session that does
+  ask again (and is approved) gets an extra key, and the client's other keys keep working (up to 10 per client).
+  **Revoke** ends all of them.
 - `POST /attach {client}` asks (needs header `X-CWeb-Attach: 1` and no `Origin`); `GET /attach/<ticket>` waits and
   collects the key once. Requests expire after an hour. `connect` does all this for you.
 - Everything answers only on `127.0.0.1`. The API sends no CORS headers; the status page's actions need its own
@@ -293,7 +297,7 @@ In this folder (the repo):
 | `CWeb-Server.ps1` | The server: API, status page, keep-alive, tab sharing |
 | `CWeb-Common.ps1` | Instance lookup, start helpers, `New-CWebInstance` (shared by server, launcher, client) |
 | `CWeb-Access.ps1` | Attach, approve/deny/revoke, keys |
-| `CWeb-KeepAliveAdmin.ps1` | Per-site on/off, keep-alive requests, drafts |
+| `CWeb-KeepAliveAdmin.ps1` | Per-site on/off, keep-alive requests, installing profiles |
 | `CWeb-Profiles.ps1` | Leftover profiles |
 | `CWeb-Client.ps1`, `cweb.sh` | How agents and scripts connect |
 | `Setup-CWeb.cmd`, `Setup-CWeb.ps1` | Setup on a machine (pinned Chrome/ChromeDriver/Selenium, data folder, self-check); `-DataRoot`, `-Uninstall` |
@@ -322,7 +326,8 @@ In it:
 
 - `config.json`: this machine's settings (port fallback, `firstPort`, per-instance overrides such as a custom port).
 - `instances.json`: instances this machine added.
-- `keepalive\`: this machine's site profiles; `drafts\` (waiting for review), `replaced\` (profiles a draft replaced).
+- `keepalive\`: this machine's site profiles; `replaced\` (profiles an install replaced); `drafts\` (only from
+  before 2026.10.26.018).
 - `_deleted\`: deleted leftover profiles, kept 30 days.
 - `scripts\`: profiles of standalone scripts using `browser\Browser-Functions.ps1`.
 - One folder per instance, `<data folder>\<instance>\`:
@@ -374,6 +379,7 @@ CWeb writes nothing outside the data folder and the repo's `browser\` downloads.
 
 | Version | Changes |
 |---|---|
+| 2026.10.26.018 | Access: sessions of one client no longer push each other out (a session whose request another session collected uses the saved key instead of asking again; a re-approval adds a key instead of replacing one; a bad key is only removed if no session saved a newer one). Keep-alive: agents hear about requests in the `connect` reply and install profiles with `op: install`, live at once after one `probe()` on the site's tab (no draft review; `op: draft` installs too). Shorter `KEEPALIVE.md`. |
 | 2026.10.26.017 | **Delete** for instances on the status page (asks first, stops it, keeps its profile as a leftover). Agents attach only to the running instance: `cweb.sh <client> connect` picks it (exit 6 `choose` when several run), and `connect` never starts or creates one. Status-page actions now need the page's own `Origin`. `Invoke-CWeb` needs `-Instance`. |
 | 2026.10.26.016 | `Update-CWeb.cmd`: asks before stopping running instances (`-Yes` to skip), stops them cleanly, pulls, runs setup, restarts what was running. README **Update** section. Location-agnostic: setup installs the cweb skill with this machine's CWeb folder filled in (`-Uninstall` removes it), and the docs no longer assume `C:\CWeb`. |
 | 2026.10.26.015 | Data folder default moved from `%LOCALAPPDATA%\CWeb` to `%USERPROFILE%\CWebData`: the Claude desktop app (MSIX) redirects AppData, so agents and the server saw different folders. Old folder still used until `Setup-CWeb.cmd` moves it. |

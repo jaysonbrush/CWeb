@@ -66,15 +66,15 @@ a second server, can't use another instance without a separate approval, and can
   and sign-ins) and the **leftover profiles** of deleted instances (Restore or Delete).
 - **Tabs:** every tab, who owns it, who's working in it, how long its session has left, and its keep-alive control.
 - **Commands:** what every agent did, and when.
-- **Keep-alive:** turn a site's keep-alive on or off for this instance; review agent-written **drafts** (View source,
-  **Enable**, **Discard**); see requests.
+- **Keep-alive:** turn a site's keep-alive on or off for this instance; see requests and what was renewed.
 - **Access:** approve or deny agents; revoke approved ones.
 - **Stop server:** closes the Chrome window (sign-ins are kept) and stops the server.
 
 ## Staying signed in
 
-To stay signed in to a site, click **Keep alive** on its tab, then ask an agent to *"work the CWeb keep-alive
-requests"*. It writes a profile as a **draft**; nothing runs until you click **Enable** on the Keep-alive tab.
+To stay signed in to a site, click **Keep alive** on its tab. The next agent that connects is told about it (or ask
+one to *"work the CWeb keep-alive requests"*). It builds a profile for the site and installs it, live at once; switch
+it off on the Keep-alive tab if you don't want it.
 
 ## Instances
 

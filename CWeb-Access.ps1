@@ -10,6 +10,7 @@
 
 $script:AccessPendingMinutes = 60   # a request (or an approved key nobody collected) is dropped after this
 $script:AccessMaxPending     = 20
+$script:AccessMaxKeys        = 10   # keys per client (one per machine view or session that asked); oldest dropped
 $script:AccessSaveMinutes    = 5    # how often a changed last-used time is written to disk
 
 function New-CWebSecret {
@@ -33,7 +34,7 @@ function Initialize-CWebAccess {
     param([string]$DataDir)
     $script:Access = @{
         Path     = Join-Path $DataDir 'approvals.json'
-        Clients  = @{}            # name -> @{ fingerprint; approved; lastUsed }
+        Clients  = @{}            # name -> @{ fingerprints (newest last); approved; lastUsed }
         ByPrint  = @{}            # fingerprint -> name
         Pending  = [System.Collections.Generic.List[object]]::new()
         Dirty    = $false
@@ -44,9 +45,11 @@ function Initialize-CWebAccess {
         $saved = Get-Content $script:Access.Path -Raw | ConvertFrom-Json -AsHashtable
         foreach ($name in @($saved.clients.Keys)) {
             $c = $saved.clients[$name]
-            if (-not (Test-CWebClientName $name) -or $c.fingerprint -notmatch '^[0-9a-f]{64}$') { continue }
-            $script:Access.Clients[$name] = @{ fingerprint = $c.fingerprint; approved = [string]$c.approved; lastUsed = [string]$c.lastUsed }
-            $script:Access.ByPrint[$c.fingerprint] = $name
+            # "fingerprints" (a list); files from before 2026.10.26.018 have one "fingerprint".
+            $prints = @(@($c.fingerprints) + @($c.fingerprint) | Where-Object { $_ -match '^[0-9a-f]{64}$' } | Select-Object -Unique)
+            if (-not (Test-CWebClientName $name) -or -not $prints.Count) { continue }
+            $script:Access.Clients[$name] = @{ fingerprints = [System.Collections.Generic.List[string]]::new([string[]]$prints); approved = [string]$c.approved; lastUsed = [string]$c.lastUsed }
+            foreach ($fp in $prints) { $script:Access.ByPrint[$fp] = $name }
         }
         Write-Host "  Access: $($script:Access.Clients.Count) approved client(s)"
     } catch {
@@ -62,7 +65,7 @@ function Save-CWebAccess {
     $clients = [ordered]@{}
     foreach ($name in ($script:Access.Clients.Keys | Sort-Object)) {
         $c = $script:Access.Clients[$name]
-        $clients[$name] = [ordered]@{ fingerprint = $c.fingerprint; approved = $c.approved; lastUsed = $c.lastUsed }
+        $clients[$name] = [ordered]@{ fingerprints = @($c.fingerprints); approved = $c.approved; lastUsed = $c.lastUsed }
     }
     $tmp = "$($script:Access.Path).tmp"
     [ordered]@{ note = 'CWeb approved clients. Fingerprints (SHA-256) of their keys only, never the keys.'; clients = $clients } |
@@ -166,13 +169,19 @@ function Set-AttachDecision {
     }
     $key = 'cweb_' + (New-CWebSecret 32)
     $fp = Get-CWebFingerprint $key
-    $old = $script:Access.Clients[$p.Client]
-    if ($old) { $script:Access.ByPrint.Remove($old.fingerprint) }   # a re-approval replaces the client's old key
-    $script:Access.Clients[$p.Client] = @{ fingerprint = $fp; approved = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'); lastUsed = '' }
+    # A re-approval adds a key, it doesn't replace one: another session of the same client may still use the old key,
+    # and cutting it off made sessions ask (and be approved) again in turns. The oldest go past $AccessMaxKeys.
+    $c = $script:Access.Clients[$p.Client]
+    $old = [bool]$c
+    if (-not $c) { $c = @{ fingerprints = [System.Collections.Generic.List[string]]::new(); approved = ''; lastUsed = '' }; $script:Access.Clients[$p.Client] = $c }
+    $c.fingerprints.Add($fp); $c.approved = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    while ($c.fingerprints.Count -gt $script:AccessMaxKeys) { $script:Access.ByPrint.Remove($c.fingerprints[0]); $c.fingerprints.RemoveAt(0) }
     $script:Access.ByPrint[$fp] = $p.Client
     $p.State = 'approved'; $p.Key = $key
+    # Every other request from this client that's still waiting is answered with the same key (parallel sessions).
+    foreach ($o in @($script:Access.Pending | Where-Object { $_.Client -eq $p.Client -and $_.State -eq 'pending' })) { $o.State = 'approved'; $o.Key = $key }
     Save-CWebAccess
-    Write-Host "[$(Get-Date -Format HH:mm:ss)] access approved: '$($p.Client)'$(if ($old) { ' (replaces its old key)' })" -ForegroundColor Green
+    Write-Host "[$(Get-Date -Format HH:mm:ss)] access approved: '$($p.Client)'$(if ($old) { ' (adds a key; its other keys keep working)' })" -ForegroundColor Green
     return @{ success = $true; approved = $p.Client }
 }
 
@@ -180,7 +189,7 @@ function Revoke-CWebClient {
     param([string]$Client)
     $c = $script:Access.Clients[$Client]
     if (-not $c) { return @{ success = $false; error = "'$Client' isn't an approved client." } }
-    $script:Access.ByPrint.Remove($c.fingerprint)
+    foreach ($fp in @($c.fingerprints)) { $script:Access.ByPrint.Remove($fp) }   # every key of this client
     $script:Access.Clients.Remove($Client)
     Save-CWebAccess
     Write-Host "[$(Get-Date -Format HH:mm:ss)] access revoked: '$Client'" -ForegroundColor Yellow

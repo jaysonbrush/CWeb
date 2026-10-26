@@ -5,10 +5,11 @@
 #   this instance. Kept in the instance's data folder (keepalive-sites.json).
 # - Requests: "Keep alive" on a tab whose site has no profile files a request (keepalive-requests.json in the
 #   instance's data folder): the site's address only (scheme and host), never the full page URL.
-# - Drafts: an agent works a request and submits a profile with the API (keepalive op=draft). It's saved to
-#   <data folder>\keepalive\drafts\<id>.js, which the keep-alive never reads. It runs only after the user clicks Enable on the
-#   status page, which moves it to <data folder>\keepalive\<id>.js (a profile it replaces is kept in keepalive\replaced\).
-#   CWeb ships with no profiles: each machine builds its own this way.
+# - Install: an agent works a request and installs a profile with the API (keepalive op=install). After one probe()
+#   on an open tab of the site it goes live at once in <data folder>\keepalive\<id>.js (a profile it replaces is kept in
+#   keepalive\replaced\); the user can switch it off on the status page. Each machine builds its own profiles this way.
+# - Drafts (before 2026.10.26.018, op=draft): drafts still waiting in keepalive\drafts\ can be enabled or discarded on
+#   the status page; op=draft now installs, like op=install.
 
 $script:KaIdPattern = '^[a-z0-9][a-z0-9-]{0,39}$'
 
@@ -82,7 +83,7 @@ function New-KeepAliveRequest {
     $script:KaAdmin.Requests.Add($r)
     Save-KeepAliveRequests
     Write-KeepAliveLog "keep-alive requested for $origin (request $($r.id)); an agent can work it with keepalive op=requests"
-    return @{ success = $true; request = $r.id; site = $origin; message = 'Requested. Ask an agent to work the CWeb keep-alive requests.' }
+    return @{ success = $true; request = $r.id; site = $origin; message = 'Requested. Agents are told when they connect; or ask one to work the CWeb keep-alive requests.' }
 }
 
 function Remove-KeepAliveRequest {
@@ -115,21 +116,55 @@ function Test-KeepAliveSource {
     return $null
 }
 
-function Add-KeepAliveDraft {
-    # From an agent: keepalive op=draft {name, source, request?}.
+function Install-KeepAliveProfile {
+    # From an agent: keepalive op=install {name, source, request?}. Goes live at once: saved straight to
+    # <data folder>\keepalive\<name>.js and switched on. Before that, probe() runs once on an open tab of the site, so a
+    # profile that throws or returns nonsense is refused now instead of failing quietly later. The user can switch it
+    # off on the status page; a profile it replaces is kept in keepalive\replaced\.
     param([string]$Name, [string]$Source, [string]$RequestId, [string]$Client)
-    if ($Name -notmatch $script:KaIdPattern) { return @{ success = $false; error = "Draft name '$Name': 1-40 lowercase letters, digits, hyphens (the vendor, e.g. 'example-portal')." } }
+    if ($Name -notmatch $script:KaIdPattern) { return @{ success = $false; error = "Profile name '$Name': 1-40 lowercase letters, digits, hyphens (the vendor, e.g. 'example-portal')." } }
     $bad = Test-KeepAliveSource $Source
     if ($bad) { return @{ success = $false; error = $bad } }
-    New-Item -ItemType Directory -Path $script:KaAdmin.DraftDir -Force | Out-Null
-    $path = Join-Path $script:KaAdmin.DraftDir "$Name.js"
-    Set-Content -LiteralPath $path -Value $Source -Encoding utf8 -NoNewline
-    if ($RequestId) {
-        $r = $script:KaAdmin.Requests | Where-Object id -eq $RequestId | Select-Object -First 1
-        if ($r) { $r.state = 'drafted'; $r.draft = $Name; $r.by = $Client; $r.note = $null; Save-KeepAliveRequests }
+    $meta = Get-KeepAliveDraftMeta $Source
+
+    $check = $null; $checkedOn = $null
+    $tab = @($script:KeepAlive.Tabs.GetEnumerator() | Where-Object { $_.Value.Url -and $_.Value.Url -match $meta.match }) | Select-Object -First 1
+    if ($tab -and $script:Browser) {
+        $d = $script:Browser.Driver
+        $back = try { $d.CurrentWindowHandle } catch { $null }
+        $checkedOn = Get-KeepAliveTabName $tab.Key
+        try {
+            $d.SwitchTo().Window($tab.Key) | Out-Null
+            $check = Invoke-KeepAliveSite -Site ([pscustomobject]@{ Source = $Source }) -Call probe
+        } catch {
+            return @{ success = $false; error = "probe() failed on tab '$checkedOn': $($_.Exception.Message). Not installed." }
+        } finally {
+            if ($back) { try { $d.SwitchTo().Window($back) | Out-Null } catch { } }
+            $script:SwitchStamp++   # the driver moved; callers' tabs are re-entered before their next command
+        }
+        $ok = $check -and ($check.loggedOut -eq $true -or ($check.loggedOut -eq $false -and $check.remaining -is [ValueType]))
+        if (-not $ok) { return @{ success = $false; error = "probe() on tab '$checkedOn' returned $($check | ConvertTo-Json -Compress -Depth 3); it must return { loggedOut: true } or { loggedOut: false, remaining: <seconds> }. Not installed." } }
     }
-    Write-KeepAliveLog "draft '$Name' submitted by $Client$(if ($RequestId) { " for request $RequestId" }) -- waiting for review on the status page" Yellow
-    return @{ success = $true; draft = $Name; message = 'Saved as a draft. It runs only after the user enables it on the status page.' }
+
+    New-Item -ItemType Directory -Path $script:KeepAlive.SiteDir -Force | Out-Null
+    $live = Join-Path $script:KeepAlive.SiteDir "$Name.js"
+    $replaced = Test-Path $live
+    if ($replaced) {
+        New-Item -ItemType Directory -Path $script:KaAdmin.ReplacedDir -Force | Out-Null
+        Move-Item -LiteralPath $live -Destination (Join-Path $script:KaAdmin.ReplacedDir "$Name-$(Get-Date -Format yyyyMMdd-HHmmss).js")
+    }
+    Set-Content -LiteralPath $live -Value $Source -Encoding utf8 -NoNewline
+    [void]$script:KaAdmin.Off.Remove($Name); Save-KeepAliveSettings
+    # Done: the request it answers, and any other open request this profile now covers.
+    foreach ($r in @($script:KaAdmin.Requests | Where-Object { $_.id -eq $RequestId -or ($_.site -and $_.site -match $meta.match) })) { [void]$script:KaAdmin.Requests.Remove($r) }
+    Save-KeepAliveRequests
+    foreach ($t in $script:KeepAlive.Tabs.Values) { $t.NextCheck = [datetime]::MinValue }   # run it on matching tabs now
+    Write-KeepAliveLog "profile '$Name' ($($meta.name)) installed by $Client and live$(if ($replaced) { ' (replaced the old one)' })$(if ($checkedOn) { "; probe on $checkedOn ok" })" Green
+    return @{
+        success = $true; installed = $Name; live = $true; replaced = $replaced; checkedOn = $checkedOn; probe = $check
+        message = $(if ($checkedOn) { "Live now. probe() on '$checkedOn' returned $($check | ConvertTo-Json -Compress)." } else { 'Live now. No tab of this site is open, so probe() was not tried yet; it runs when one opens.' }) +
+            ' The user can switch it off on the status page (Keep-alive tab).'
+    }
 }
 
 function Set-KeepAliveRequestDeclined {

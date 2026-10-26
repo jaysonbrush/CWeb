@@ -201,7 +201,7 @@
         <thead><tr><th>Site</th><th>Asked</th><th>State</th><th>Note</th><th></th></tr></thead>
         <tbody id="karequests"></tbody>
       </table></div>
-      <div class="small" style="margin-top:8px">Filed with the Keep alive button on a tab. To work them, tell an agent: "work the CWeb keep-alive requests".</div>
+      <div class="small" style="margin-top:8px">Filed with the Keep alive button on a tab. Agents are told about them when they connect, or tell one: "work the CWeb keep-alive requests". The profile it builds is live at once; switch it off under Site profiles.</div>
     </div>
     <div class="card">
       <h2>Site profiles</h2>
@@ -532,7 +532,7 @@
     else pend.replaceChildren(...ac.pending.map(p => {
       const tr = el('tr'), who = el('td');
       who.append(el('div', p.client, 'title'));
-      if (p.replaces) who.append(el('div', 'Already approved. Approving gives it a new key; the old key stops working.', 'small'));
+      if (p.replaces) who.append(el('div', 'Already approved. Approving adds a key for this session; its other sessions keep working.', 'small'));
       const ok = el('button', 'Approve', 'primary'), no = el('button', 'Deny', 'close');
       ok.type = no.type = 'button';
       ok.onclick = () => accessAction('/status/approve', { ref: p.ref }, 'approved');

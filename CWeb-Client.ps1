@@ -82,19 +82,39 @@ function Connect-CWeb {
     function Result($status, $message) {
         [pscustomobject]@{ status = $status; instance = $inst.Name; client = $Client; port = $inst.Port; statusUrl = $statusUrl; message = $message }
     }
+    function Connected($message) {
+        # Connected, plus the sites the user flagged to keep alive: how an agent hears about them.
+        $res = Result 'connected' $message
+        try {
+            $st = Invoke-RestMethod "$base/status.json" -TimeoutSec 5
+            $open = @($st.keepAlive.requests | Where-Object state -eq 'open' | ForEach-Object { [ordered]@{ id = $_.id; site = $_.site } })
+            if ($open.Count) {
+                $res | Add-Member -NotePropertyName keepAliveRequests -NotePropertyValue $open
+                $res.message += " The user flagged $($open.Count) site(s) to keep alive ($(($open | ForEach-Object { $_.site }) -join ', ')): build and install a profile for each (KEEPALIVE.md), unless you're busy with something the user asked for first."
+            }
+        } catch { }
+        $res
+    }
     if (-not (Get-CWebRunningServer -Instance $inst)) {
         return Result 'error' "CWeb '$($inst.Name)' isn't running. $ask"
     }
 
+    # Several sessions of one client share its key file, so another session may write a key at any moment: read it
+    # fresh each time, and never delete a key other than the one just found not to work.
+    function Read-Key { if (Test-Path $files.Key) { $k = (Get-Content -LiteralPath $files.Key -Raw -ErrorAction SilentlyContinue); if ($k) { $k.Trim() } } }
+    function Test-Key($k) { (Invoke-CWebHttp POST "$base/api" @{ action = 'status' } @{ 'X-API-Key' = $k }).code }
+
     # 2. A saved key that still works: done.
-    if (Test-Path $files.Key) {
-        $key = (Get-Content -LiteralPath $files.Key -Raw).Trim()
-        $r = Invoke-CWebHttp POST "$base/api" @{ action = 'status' } @{ 'X-API-Key' = $key }
-        if ($r.code -eq 200) { return Result 'connected' "Connected to CWeb '$($inst.Name)' as $Client." }
-        if ($r.code -eq 401) {
-            Write-Host "The saved key for $Client no longer works (revoked or replaced); asking for access again."
-            Remove-Item -LiteralPath $files.Key -Force
-        } else { return Result 'error' "CWeb '$($inst.Name)' didn't answer the key check (HTTP $($r.code))." }
+    $key = Read-Key
+    if ($key) {
+        $code = Test-Key $key
+        if ($code -eq 200) { return Connected "Connected to CWeb '$($inst.Name)' as $Client." }
+        if ($code -ne 401) { return Result 'error' "CWeb '$($inst.Name)' didn't answer the key check (HTTP $code)." }
+        Start-Sleep -Seconds 2   # another session may be saving a new key right now
+        $now = Read-Key
+        if ($now -and $now -ne $key -and (Test-Key $now) -eq 200) { return Connected "Connected to CWeb '$($inst.Name)' as $Client." }
+        Write-Host "The saved key for $Client no longer works (revoked); asking for access again."
+        if ((Read-Key) -eq $key) { Remove-Item -LiteralPath $files.Key -Force -ErrorAction SilentlyContinue }
     }
 
     # 3. Ask for access, or keep waiting on the request already made.
@@ -120,13 +140,21 @@ function Connect-CWeb {
         $s = Invoke-CWebHttp GET "$base/attach/$ticket" $null $hdr
         $state = [string]$s.json.status
         if ($state -eq 'approved') {
-            Set-Content -LiteralPath $files.Key -Value $s.json.key -NoNewline
+            $tmp = "$($files.Key).$PID.tmp"
+            Set-Content -LiteralPath $tmp -Value $s.json.key -NoNewline
+            Move-Item -LiteralPath $tmp -Destination $files.Key -Force   # whole file at once: other sessions read it
             Remove-Item -LiteralPath $files.Ticket -Force -ErrorAction SilentlyContinue
-            return Result 'connected' "Approved. Connected to CWeb '$($inst.Name)' as $Client."
+            return Connected "Approved. Connected to CWeb '$($inst.Name)' as $Client."
         }
         if ($state -eq 'denied') {
             Remove-Item -LiteralPath $files.Ticket -Force -ErrorAction SilentlyContinue
             return Result 'denied' "Access for '$Client' was denied on the status page."
+        }
+        # Another session of this client may have collected the key for the same request: use it, don't ask again.
+        $k = Read-Key
+        if ($k -and (Test-Key $k) -eq 200) {
+            Remove-Item -LiteralPath $files.Ticket -Force -ErrorAction SilentlyContinue
+            return Connected "Approved. Connected to CWeb '$($inst.Name)' as $Client."
         }
         if ($state -ne 'pending') {
             # The request is gone (expired, or the server restarted). Ask once more in this call.

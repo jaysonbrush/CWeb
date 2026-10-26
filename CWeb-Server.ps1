@@ -552,13 +552,13 @@ function Invoke-BrowserAction {
                     "drafts" {
                         return @{ success = $true; drafts = @(Get-KeepAliveDrafts | ForEach-Object { $_.Remove('source'); $_ }) }
                     }
-                    "draft" {
-                        return Add-KeepAliveDraft -Name ([string]$Body.name) -Source ([string]$Body.source) -RequestId ([string]$Body.request) -Client $script:Caller
+                    { $_ -in 'install', 'draft' } {   # draft: the old name, now installs too
+                        return Install-KeepAliveProfile -Name ([string]$Body.name) -Source ([string]$Body.source) -RequestId ([string]$Body.request) -Client $script:Caller
                     }
                     "decline" {
                         return Set-KeepAliveRequestDeclined -RequestId ([string]$Body.request) -Note ([string]$Body.note) -Client $script:Caller
                     }
-                    default  { return @{ success = $false; error = "Unknown keepalive op '$op' (status|on|off|check|requests|drafts|draft|decline)" } }
+                    default  { return @{ success = $false; error = "Unknown keepalive op '$op' (status|on|off|check|requests|install|decline)" } }
                 }
                 return @{ success = $true; enabled = $script:KeepAlive.Enabled; sites = @(Get-KeepAliveSites | ForEach-Object { $_.Name }); tabs = @(Get-KeepAliveStatus) }
             }

@@ -1,12 +1,11 @@
 # Working CWeb keep-alive requests (for agents)
 
-The user clicks **Keep alive** on a tab in a CWeb status page when a site keeps signing them out. That files a request
-for the site's address. Your job: work out how that site's session expires and write a profile that keeps it alive,
-**as a draft**. A draft never runs until the user reviews it and clicks **Enable**.
+The user clicks **Keep alive** on a tab when a site keeps signing them out. You hear about it when you `connect`
+(`keepAliveRequests` in the reply), or the user asks you to "work the CWeb keep-alive requests". Build a profile for
+the site and install it: it's **live at once**, and the user can switch it off on the status page.
 
-Use `cweb.sh` (or `Invoke-CWeb`) as an approved client of the instance the request is on. Examples use `work` and the
-client name `keepalive-builder`; `$CWEB` stands for the CWeb folder in Bash form (the **cweb** skill has the real
-path), so write the real path in each command.
+`$CWEB` is the CWeb folder in Bash form (the **cweb** skill has the real path); write the real path in each command.
+Examples use the instance `work` and the client `keepalive-builder`.
 
 ## 1. See what's asked
 
@@ -15,63 +14,49 @@ $CWEB/cweb.sh keepalive-builder connect     # attaches to the running instance; 
 $CWEB/cweb.sh work keepalive-builder '{"action":"keepalive","op":"requests"}'
 ```
 
-Each open request has an `id` and a `site` (e.g. `https://portal.example.org`). Find the tab the user is signed in on:
-`listtabs` (its `details` show each tab's url). **Work in that tab, but don't navigate it away or sign it out**: it's
-the user's session. Read with `tab` set on each request; ask the user first before anything that changes the page.
+Each request has an `id` and a `site`. `listtabs` shows the tab the user is signed in on (`details` has each url).
+Work in that tab with `tab` on each command; don't navigate it away or sign it out.
 
-## 2. Find out how the session expires (read only)
+## 2. Find how the session expires
 
-Look, don't act. With `executescript` in that tab:
-- A countdown or "session expires" element on the page.
-- An idle timer in the page's scripts (search loaded script text for `timeout`, `idle`, `expire`, `logout`).
-- A token with an expiry in `localStorage` / `sessionStorage` (often a JWT: decode the middle part for `exp`).
-- A keep-alive or "session remaining" endpoint the page polls (check `performance.getEntriesByType('resource')`).
+With `executescript` in that tab, look for one of: a countdown or "session expires" element, an idle timer in the
+page's scripts (`timeout`, `idle`, `expire`, `logout`), a token with an expiry in `localStorage` / `sessionStorage`
+(a JWT's `exp`), or a keep-alive endpoint the page calls (`performance.getEntriesByType('resource')`).
 
-You need two things:
-- **probe()**: reads the time left **without** extending it, and spots the signed-out page. Confirm by calling it
-  twice a minute apart: the number must go down, not reset.
-- **renew()**: extends the session the way the site itself does (its own keep-alive call, a synthetic activity event,
-  a light `GET` the server counts as activity). **Never reload the page or navigate.** Prove it: probe, renew,
-  probe again; the time left must go up.
+- **probe()** reads the time left without extending it, and spots the signed-out page.
+- **renew()** extends the session the way the site does (its own keep-alive call, an activity event, a light `GET`).
+  Never reload or navigate.
 
-If you can't find a safe, read-only probe or a renewal that's proven to work, don't guess. Decline with a note:
+Quick check before installing: probe, renew, probe again; the time left should go up. If there's no way to read or
+extend the session, decline instead:
 
 ```bash
-$CWEB/cweb.sh work keepalive-builder '{"action":"keepalive","op":"decline","request":"<id>","note":"No client-side timer; session is a server cookie with no keep-alive endpoint."}'
+$CWEB/cweb.sh work keepalive-builder '{"action":"keepalive","op":"decline","request":"<id>","note":"No client-side timer and no keep-alive endpoint."}'
 ```
 
-## 3. Write the profile
-
-Format (if the machine already has profiles, in `<data folder>\keepalive\`, read one first):
+## 3. Install it
 
 ```js
 // @name        Example Portal
 // @match       ^https://[^/]+\.example\.org/
 // @renewBelow  300
-// How this site's session expires and why renew() works (a few lines).
+// How this site's session expires and why renew() works (a line or two).
 var site = {
-    probe: function () { /* read only: { loggedOut: true } or { loggedOut: false, remaining: <seconds> } */ },
+    probe: function () { /* { loggedOut: true } or { loggedOut: false, remaining: <seconds> } */ },
     renew: function () { /* extend without reloading; return a short description */ }
 };
 ```
 
-Rules:
-- `@match` names the **vendor's** domain pattern (`[^/]+\.example\.com`), never a customer's own host name, and also
-  matches the signed-out page so `probe()` can report `loggedOut`.
-- `@renewBelow` (seconds) is bigger than any warning the site shows before signing out.
-- No credentials, no customer data, no logging of page content.
-- File name = the vendor, lowercase with hyphens (`example-portal`). Same name as an existing profile = a
-  replacement; the user sees that before enabling.
-
-## 4. Submit the draft
-
-Put the source in a JSON body file (quotes and newlines survive) and send it on stdin:
+- `@match`: the vendor's domain pattern, matching the signed-out page too. `@renewBelow` (seconds): above any warning
+  the site shows before signing out.
+- No credentials or customer data in the file. Name it after the vendor (`example-portal`); the same name replaces
+  the old profile (kept in `keepalive\replaced\`).
 
 ```bash
-pwsh -NoProfile -Command '@{ action="keepalive"; op="draft"; name="example-portal"; request="<id>"; source=(Get-Content -Raw ./example-portal.js) } | ConvertTo-Json -Compress' |
+pwsh -NoProfile -Command '@{ action="keepalive"; op="install"; name="example-portal"; request="<id>"; source=(Get-Content -Raw ./example-portal.js) } | ConvertTo-Json -Compress' |
   $CWEB/cweb.sh work keepalive-builder -
 ```
 
-The server checks the headers and saves it to `<data folder>\keepalive\drafts\example-portal.js`. The request shows **draft
-ready** on the status page. Then tell the user, in a sentence or two: what expires, how probe reads it, how renew
-extends it, and what you proved. The user reviews and enables it on the status page (Keep-alive tab).
+The server checks the headers and runs `probe()` once on an open tab of the site. If that throws or returns the wrong
+shape, nothing is installed and the error says why; fix it and install again. Otherwise it's live on every matching
+tab, and the request is closed. Tell the user in a sentence: what expires and how renew() extends it.
