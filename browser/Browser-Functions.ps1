@@ -206,15 +206,19 @@ function Chrome-Start {
 
         $chromeDriverPath = Join-Path $script:ChromeScriptRoot "chromedriver-win64"
         $driverService = [OpenQA.Selenium.Chrome.ChromeDriverService]::CreateDefaultService($chromeDriverPath)
-        # ChromeDriver's own log (why Chrome failed to launch / crashed) when the server set a log folder.
-        # One file per start (a restart used to overwrite the day's file, losing why the last start failed). Verbose
-        # logs are large, so only the last 3 days are kept.
+        # ChromeDriver's own log (why Chrome failed to launch / crashed) when the server set a log folder: warnings and
+        # errors only. One file per start (a restart used to overwrite the day's file, losing why the last start
+        # failed), kept 7 days like the other logs.
         if ($env:CWEB_LOGDIR) {
             try {
+                # Day files (chromedriver-<date>.log) are from versions before 2026.10.27.022, which logged every command
+                # (about 1 GB a day): removed at once.
                 Get-ChildItem $env:CWEB_LOGDIR -Filter 'chromedriver-*.log' -ErrorAction SilentlyContinue |
-                    Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-3) } | Remove-Item -Force -ErrorAction SilentlyContinue
+                    Where-Object { $_.Name -match '^chromedriver-\d{4}-\d{2}-\d{2}\.log$' -or $_.LastWriteTime -lt (Get-Date).AddDays(-7) } |
+                    Remove-Item -Force -ErrorAction SilentlyContinue
                 $driverService.LogPath = Join-Path $env:CWEB_LOGDIR "chromedriver-$(Get-Date -Format yyyy-MM-dd-HHmmss).log"
-                $driverService.EnableVerboseLogging = $true
+                $driverService.EnableVerboseLogging = $false
+                $driverService.LogLevel = [OpenQA.Selenium.Chromium.ChromiumDriverLogLevel]::Warning
             } catch { }
         }
         # Command timeout 330 s (Selenium's default is 60): with a saved profile Chrome reopens the last session's tabs,

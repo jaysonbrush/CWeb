@@ -339,7 +339,7 @@ In it:
 | `approvals.json` | Approved clients: fingerprints only. |
 | `clients\<client>.key` | Keys saved by `connect` (`.ticket` while waiting). |
 | `keepalive-sites.json`, `keepalive-requests.json` | Sites switched off here; keep-alive requests. |
-| `logs\` | `server-<date>.log` (one line per command: `[time] client action [tab] target ms`), `chromedriver-<date>-<time>.log` (one per start, kept 3 days: they are large), `launcher-<date>.log`, `import-*.log`. Kept 7 days. |
+| `logs\` | `server-<date>.log` (one line per command: `[time] client action [tab] target ms`), `chromedriver-<date>-<time>.log` (one per start, warnings and errors only), `launcher-<date>.log`, `import-*.log`. Kept 7 days. |
 
 CWeb writes nothing outside the data folder and the repo's `browser\` downloads.
 
@@ -379,6 +379,7 @@ CWeb writes nothing outside the data folder and the repo's `browser\` downloads.
 
 | Version | Changes |
 |---|---|
+| 2026.10.27.022 | ChromeDriver logs warnings and errors only. Every version before logged every command and reply in full (about 1 GB a day per instance); those day files (`chromedriver-<date>.log`) are deleted on the next start. ChromeDriver logs are kept 7 days like the other logs. |
 | 2026.10.27.021 | Clean Chrome shutdown and restart. Stopping (status page, updates) closes Chrome the way its own Exit does and waits until it has exited, so the next start never says Chrome didn't shut down correctly; if ChromeDriver doesn't answer, Chrome is closed over its DevTools port, and `Update-CWeb`'s force-stop closes Chrome cleanly before ending the server. Restarts reopen the last session's tabs and session sign-ins (`--restore-last-session`: Chrome had been resetting the preference CWeb set). Starts wait up to 330 s for ChromeDriver instead of 60 s; a start that still fails closes the Chrome it opened. One ChromeDriver log per start, kept 3 days. |
 | 2026.10.27.020 | Keep-alive no longer switches tabs: checks, renewals and the install-time `probe()` run over Chrome's DevTools connection, so no tab comes to the front and agents' tabs stay put. `probe()`/`renew()` may return a promise. Any API reply can carry a `keepAliveTask` (a site the user flagged, handed to one client at a time for 15 minutes): agents install it without asking the user. |
 | 2026.10.26.019 | Keep-alive install messages name the tab once (they said `tab tab x`). |
