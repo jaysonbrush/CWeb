@@ -234,15 +234,15 @@ sessions don't time out while you work elsewhere. On by default; nothing to star
   never reloads a page, so form input and dialogs survive.
 - Each tab is checked shortly before it needs renewing, and at least every 10 minutes. Your own activity on a site
   counts; the next probe sees it.
-- A check switches to the tab (it comes to the front for a moment), then back. Your tab and iframe are restored before
-  your next command.
+- Checks run over Chrome's DevTools connection: no tab is switched to or brought to the front, and your tab and
+  iframe stay as they are. Agents only wait while a check actually runs.
 - Signed-out tabs are reported once (status page, server log).
 - **Per instance on/off:** the user can switch a site off for one instance on the status page; its tabs are then
   recognised but never probed or renewed.
 
 Each machine builds its own profiles: the user clicks **Keep alive** on a tab, which files a request. You hear about
-open requests when you `connect` (`keepAliveRequests` in the reply), or when the user asks you to "work the CWeb
-keep-alive requests". Follow **`KEEPALIVE.md`**: find how the site's session expires, write the profile and install
+it without being told: the `connect` reply lists open requests (`keepAliveRequests`), and any reply can carry a
+`keepAliveTask` (one request, handed to one client at a time). **Handle it right away, without asking the user.** Follow **`KEEPALIVE.md`**: find how the site's session expires, write the profile and install
 it (`keepalive` `op: install`). The server runs `probe()` once on an open tab of the site and, if that works, the
 profile is **live at once** (the user can switch it off on the status page). If there's no way, `op: decline` with a
 note. Don't write profile files yourself.
@@ -379,6 +379,7 @@ CWeb writes nothing outside the data folder and the repo's `browser\` downloads.
 
 | Version | Changes |
 |---|---|
+| 2026.10.27.020 | Keep-alive no longer switches tabs: checks, renewals and the install-time `probe()` run over Chrome's DevTools connection, so no tab comes to the front and agents' tabs stay put. `probe()`/`renew()` may return a promise. Any API reply can carry a `keepAliveTask` (a site the user flagged, handed to one client at a time for 15 minutes): agents install it without asking the user. |
 | 2026.10.26.019 | Keep-alive install messages name the tab once (they said `tab tab x`). |
 | 2026.10.26.018 | Access: sessions of one client no longer push each other out (a session whose request another session collected uses the saved key instead of asking again; a re-approval adds a key instead of replacing one; a bad key is only removed if no session saved a newer one). Keep-alive: agents hear about requests in the `connect` reply and install profiles with `op: install`, live at once after one `probe()` on the site's tab (no draft review; `op: draft` installs too). Shorter `KEEPALIVE.md`. |
 | 2026.10.26.017 | **Delete** for instances on the status page (asks first, stops it, keeps its profile as a leftover). Agents attach only to the running instance: `cweb.sh <client> connect` picks it (exit 6 `choose` when several run), and `connect` never starts or creates one. Status-page actions now need the page's own `Origin`. `Invoke-CWeb` needs `-Instance`. |

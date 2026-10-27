@@ -22,6 +22,7 @@ function Initialize-KeepAliveAdmin {
         ReplacedDir  = Join-Path $script:KeepAlive.SiteDir 'replaced'
         Off          = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
         Requests     = [System.Collections.Generic.List[object]]::new()
+        Claims       = @{}   # request id -> @{ Client; At }: who was handed it last (Get-KeepAliveTask)
     }
     try {
         if (Test-Path $script:KaAdmin.SitesPath) {
@@ -83,7 +84,27 @@ function New-KeepAliveRequest {
     $script:KaAdmin.Requests.Add($r)
     Save-KeepAliveRequests
     Write-KeepAliveLog "keep-alive requested for $origin (request $($r.id)); an agent can work it with keepalive op=requests"
-    return @{ success = $true; request = $r.id; site = $origin; message = 'Requested. Agents are told when they connect; or ask one to work the CWeb keep-alive requests.' }
+    return @{ success = $true; request = $r.id; site = $origin; message = 'Requested. The next agent that uses CWeb is handed it and installs a profile.' }
+}
+
+function Get-KeepAliveTask {
+    # Rides on API replies, so an agent that is using CWeb hears about a flagged site without being told. Each open
+    # request goes to one client at a time: whoever hears of it first holds it for 15 minutes, then it's offered again.
+    param([string]$Client)
+    if (-not $Client) { return $null }
+    $now = Get-Date
+    foreach ($r in @($script:KaAdmin.Requests | Where-Object state -eq 'open')) {
+        $c = $script:KaAdmin.Claims[$r.id]
+        if ($c -and $c.Client -ne $Client -and $c.At -gt $now.AddMinutes(-15)) { continue }
+        if (-not $c -or $c.Client -ne $Client) { $script:KaAdmin.Claims[$r.id] = @{ Client = $Client; At = $now } }
+        return [ordered]@{
+            request = $r.id; site = $r.site
+            do      = "The user flagged $($r.site) to stay signed in. Handle it now, before your next step, without asking the user: " +
+                      "find or open a tab of the site, write a profile and install it with keepalive op=install (request '$($r.id)'), " +
+                      "or op=decline if it can't be kept alive. See KEEPALIVE.md."
+        }
+    }
+    return $null
 }
 
 function Remove-KeepAliveRequest {
@@ -130,17 +151,12 @@ function Install-KeepAliveProfile {
     $check = $null; $checkedOn = $null
     $tab = @($script:KeepAlive.Tabs.GetEnumerator() | Where-Object { $_.Value.Url -and $_.Value.Url -match $meta.match }) | Select-Object -First 1
     if ($tab -and $script:Browser) {
-        $d = $script:Browser.Driver
-        $back = try { $d.CurrentWindowHandle } catch { $null }
         $checkedOn = Get-KeepAliveTabName $tab.Key
         try {
-            $d.SwitchTo().Window($tab.Key) | Out-Null
-            $check = Invoke-KeepAliveSite -Site ([pscustomobject]@{ Source = $Source }) -Call probe
+            # Over DevTools, like the keep-alive itself: the tab stays in the background.
+            $check = Invoke-KeepAliveSite -Site ([pscustomobject]@{ Source = $Source }) -Call probe -TabId $tab.Key
         } catch {
             return @{ success = $false; error = "probe() failed on ${checkedOn}: $($_.Exception.Message). Not installed." }
-        } finally {
-            if ($back) { try { $d.SwitchTo().Window($back) | Out-Null } catch { } }
-            $script:SwitchStamp++   # the driver moved; callers' tabs are re-entered before their next command
         }
         $ok = $check -and ($check.loggedOut -eq $true -or ($check.loggedOut -eq $false -and $check.remaining -is [ValueType]))
         if (-not $ok) { return @{ success = $false; error = "probe() on $checkedOn returned $($check | ConvertTo-Json -Compress -Depth 3); it must return { loggedOut: true } or { loggedOut: false, remaining: <seconds> }. Not installed." } }

@@ -105,6 +105,7 @@ $script:KeepAlive = @{
 }
 # Per-site on/off, keep-alive requests and agent drafts (see CWeb-KeepAliveAdmin.ps1).
 . (Join-Path $PSScriptRoot 'CWeb-KeepAliveAdmin.ps1')
+. (Join-Path $PSScriptRoot 'CWeb-DevTools.ps1')   # reads and runs scripts in tabs without switching to them
 Initialize-KeepAliveAdmin -DataDir $script:Inst.DataDir
 
 # Request stats for the /status page. Recent commands record the action and its target only,
@@ -789,8 +790,10 @@ function Get-KeepAliveSites {
 }
 
 function Invoke-KeepAliveSite {
-    param($Site, [ValidateSet('probe', 'renew')][string]$Call)
-    $raw = $script:Browser.Driver.ExecuteScript($Site.Source + "`n;return JSON.stringify(site.$Call());")
+    # Runs the profile's probe() or renew() in the tab over DevTools: the tab is not switched to or brought to the front.
+    param($Site, [ValidateSet('probe', 'renew')][string]$Call, [string]$TabId)
+    $js = "(function () {`n" + $Site.Source + "`n;return Promise.resolve(site.$Call()).then(function (r) { return JSON.stringify(r); });`n})()"
+    $raw = Invoke-DevToolsScript -TabId $TabId -Expression $js
     return $raw | ConvertFrom-Json
 }
 
@@ -851,86 +854,81 @@ function Get-KeepAliveStatus {
     }
 }
 
-# Checks only the tabs that are due. A check has to switch to the tab (which brings it to the
-# front), so each tab is checked shortly before its session needs renewing, and at least every
-# MaxCheckSeconds in case it navigated to another site. Always switches back afterwards.
+# Checks only the tabs that are due: each tab shortly before its session needs renewing, and at least every
+# MaxCheckSeconds in case it navigated to another site. Everything goes over DevTools (CWeb-DevTools.ps1), so no tab
+# is switched to or brought to the front, and the driver stays in the tab the last caller was using.
 function Invoke-KeepAliveTick {
     param([switch]$Force)
     $ka = $script:KeepAlive
     $ka.LastTick = Get-Date
     if (-not $script:Browser) { return }
     $renewing = $ka.Enabled -or $Force   # when off, tabs are still looked at (and named), but nothing is renewed
-    $driver = $script:Browser.Driver
-    try { $handles = @($driver.WindowHandles); $origin = $driver.CurrentWindowHandle } catch { return }   # alert open, browser gone
+    try { $handles = @($script:Browser.Driver.WindowHandles); $pages = Get-DevToolsTabs } catch { return }   # alert open, browser gone
     foreach ($h in @($ka.Tabs.Keys)) { if ($h -notin $handles) { $ka.Tabs.Remove($h) } }
     $now = Get-Date
     $due = @($handles | Where-Object { -not $ka.Tabs.ContainsKey($_) -or $ka.Tabs[$_].NextCheck -le $now })
     if (-not $due.Count) { return }
     $sites = if ($renewing) { @(Get-KeepAliveSites) } else { @() }
-    try {
-        foreach ($h in $due) {
-            if (-not $ka.Tabs.ContainsKey($h)) {
-                $ka.Tabs[$h] = @{ Site = $null; Url = $null; Remaining = $null; LoggedOut = $false; LastRenew = $null; LastResult = 'new'; NextCheck = $now }
-            }
-            $t = $ka.Tabs[$h]
-            try {
-                $driver.SwitchTo().Window($h) | Out-Null
-                $t.Url = $driver.Url
-                $t.Title = $driver.Title
-                Register-UnnamedTab -Handle $h -Url $t.Url
-                $site = $sites | Where-Object { $t.Url -match $_.Match } | Select-Object -First 1
-                $t.Site = if ($site) { $site.Name } else { $null }
-                $t.SiteId = if ($site) { $site.Id } else { $null }
-                if ($site -and -not (Test-KeepAliveSiteOn $site.Id)) {
-                    # Turned off for this instance on the status page: recognised, never probed or renewed.
-                    $t.Remaining = $null; $t.LoggedOut = $false; $t.LastResult = 'off for this site'
-                    $t.NextCheck = $now.AddSeconds($ka.MaxCheckSeconds)
-                    continue
-                }
-                if (-not $site) {
-                    $t.Remaining = $null; $t.LastResult = if ($renewing) { 'no site profile' } else { 'keep-alive off' }
-                    # A tab still waiting for a name (blank new-tab page) is looked at again soon.
-                    $named = $script:Browser.Tabs.Values -contains $h
-                    $t.NextCheck = $now.AddSeconds($(if ($named) { $ka.MaxCheckSeconds } else { 30 }))
-                    continue
-                }
-                $p = Invoke-KeepAliveSite -Site $site -Call probe
-                if ($p.loggedOut) {
-                    if (-not $t.LoggedOut) { Write-KeepAliveLog "$(Get-KeepAliveTabName $h) ($($site.Name)) is signed out -- log in again" Yellow }
-                    $t.LoggedOut = $true; $t.Remaining = $null; $t.LastResult = 'signed out'
-                    $t.NextCheck = $now.AddSeconds(120)
-                    continue
-                }
-                $t.LoggedOut = $false
-                $left = [int]$p.remaining
-                $t.LastResult = "ok, ${left}s left"
-                if ($left -le $site.RenewBelow) {
-                    $how = Invoke-KeepAliveSite -Site $site -Call renew
-                    Start-Sleep -Seconds 2   # some sites renew asynchronously
-                    $p2 = Invoke-KeepAliveSite -Site $site -Call probe
-                    $after = if ($p2.loggedOut) { 0 } else { [int]$p2.remaining }
-                    $t.LastRenew = Get-Date
-                    $t.LastResult = "renewed ${left}s -> ${after}s ($how)"
-                    if ($after -le $left) {
-                        Write-KeepAliveLog "$(Get-KeepAliveTabName $h) ($($site.Name)): renew did not extend the session: $($t.LastResult)" Yellow
-                        $t.Remaining = $after; $t.CheckedAt = Get-Date; $t.NextCheck = $now.AddSeconds(60)
-                        continue
-                    }
-                    Write-KeepAliveLog "$(Get-KeepAliveTabName $h) ($($site.Name)): $($t.LastResult)"
-                    $left = $after
-                }
-                $t.Remaining = $left
-                $t.CheckedAt = Get-Date
-                $t.NextCheck = $now.AddSeconds([math]::Max(30, [math]::Min($ka.MaxCheckSeconds, $left - $site.RenewBelow - 15)))
-            } catch {
-                $t.LastResult = "error: $($_.Exception.Message)"
-                $t.NextCheck = $now.AddSeconds(120)
-                Write-KeepAliveLog "$(Get-KeepAliveTabName $h): $($t.LastResult)" Yellow
-            }
+    foreach ($h in $due) {
+        if (-not $ka.Tabs.ContainsKey($h)) {
+            $ka.Tabs[$h] = @{ Site = $null; Url = $null; Remaining = $null; LoggedOut = $false; LastRenew = $null; LastResult = 'new'; NextCheck = $now }
         }
-    } finally {
-        try { $driver.SwitchTo().Window($origin) | Out-Null } catch { }
-        $script:SwitchStamp++   # the driver left the client's frame; re-enter it before the next command
+        $t = $ka.Tabs[$h]
+        try {
+            $page = $pages[$h]
+            if (-not $page) { throw 'DevTools does not list this tab.' }
+            $t.Url = [string]$page.url
+            $t.Title = [string]$page.title
+            Register-UnnamedTab -Handle $h -Url $t.Url
+            $site = $sites | Where-Object { $t.Url -match $_.Match } | Select-Object -First 1
+            $t.Site = if ($site) { $site.Name } else { $null }
+            $t.SiteId = if ($site) { $site.Id } else { $null }
+            if ($site -and -not (Test-KeepAliveSiteOn $site.Id)) {
+                # Turned off for this instance on the status page: recognised, never probed or renewed.
+                $t.Remaining = $null; $t.LoggedOut = $false; $t.LastResult = 'off for this site'
+                $t.NextCheck = $now.AddSeconds($ka.MaxCheckSeconds)
+                continue
+            }
+            if (-not $site) {
+                $t.Remaining = $null; $t.LastResult = if ($renewing) { 'no site profile' } else { 'keep-alive off' }
+                # A tab still waiting for a name (blank new-tab page) is looked at again soon.
+                $named = $script:Browser.Tabs.Values -contains $h
+                $t.NextCheck = $now.AddSeconds($(if ($named) { $ka.MaxCheckSeconds } else { 30 }))
+                continue
+            }
+            $p = Invoke-KeepAliveSite -Site $site -Call probe -TabId $h
+            if ($p.loggedOut) {
+                if (-not $t.LoggedOut) { Write-KeepAliveLog "$(Get-KeepAliveTabName $h) ($($site.Name)) is signed out -- log in again" Yellow }
+                $t.LoggedOut = $true; $t.Remaining = $null; $t.LastResult = 'signed out'
+                $t.NextCheck = $now.AddSeconds(120)
+                continue
+            }
+            $t.LoggedOut = $false
+            $left = [int]$p.remaining
+            $t.LastResult = "ok, ${left}s left"
+            if ($left -le $site.RenewBelow) {
+                $how = Invoke-KeepAliveSite -Site $site -Call renew -TabId $h
+                Start-Sleep -Seconds 2   # some sites renew asynchronously
+                $p2 = Invoke-KeepAliveSite -Site $site -Call probe -TabId $h
+                $after = if ($p2.loggedOut) { 0 } else { [int]$p2.remaining }
+                $t.LastRenew = Get-Date
+                $t.LastResult = "renewed ${left}s -> ${after}s ($how)"
+                if ($after -le $left) {
+                    Write-KeepAliveLog "$(Get-KeepAliveTabName $h) ($($site.Name)): renew did not extend the session: $($t.LastResult)" Yellow
+                    $t.Remaining = $after; $t.CheckedAt = Get-Date; $t.NextCheck = $now.AddSeconds(60)
+                    continue
+                }
+                Write-KeepAliveLog "$(Get-KeepAliveTabName $h) ($($site.Name)): $($t.LastResult)"
+                $left = $after
+            }
+            $t.Remaining = $left
+            $t.CheckedAt = Get-Date
+            $t.NextCheck = $now.AddSeconds([math]::Max(30, [math]::Min($ka.MaxCheckSeconds, $left - $site.RenewBelow - 15)))
+        } catch {
+            $t.LastResult = "error: $($_.Exception.Message)"
+            $t.NextCheck = $now.AddSeconds(120)
+            Write-KeepAliveLog "$(Get-KeepAliveTabName $h): $($t.LastResult)" Yellow
+        }
     }
 }
 
@@ -1350,6 +1348,11 @@ try {
                 $body = $bodyText | ConvertFrom-Json -AsHashtable
                 $timer = [System.Diagnostics.Stopwatch]::StartNew()
                 $result = Invoke-ClientAction -Body $body -Client $script:Caller
+                # A site the user flagged to keep alive: handed to the caller with its reply (not while it's working one).
+                if ($result -is [hashtable] -and $body.action -ne 'keepalive') {
+                    $task = Get-KeepAliveTask -Client $script:Caller
+                    if ($task) { $result.keepAliveTask = $task }
+                }
                 Send-Response -Response $response -Data $result
                 try { Add-RequestStat -Body $body -Result $result -Ms $timer.Elapsed.TotalMilliseconds -Client $script:Caller } catch { }
             } catch {

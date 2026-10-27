@@ -1,8 +1,9 @@
 # Working CWeb keep-alive requests (for agents)
 
-The user clicks **Keep alive** on a tab when a site keeps signing them out. You hear about it when you `connect`
-(`keepAliveRequests` in the reply), or the user asks you to "work the CWeb keep-alive requests". Build a profile for
-the site and install it: it's **live at once**, and the user can switch it off on the status page.
+The user clicks **Keep alive** on a tab when a site keeps signing them out. You hear about it without being told: the
+`connect` reply lists open requests (`keepAliveRequests`), and any reply can carry a `keepAliveTask` naming one.
+Handle it right away, without asking the user: build a profile for the site and install it. It's **live at once**,
+and the user can switch it off on the status page.
 
 `$CWEB` is the CWeb folder in Bash form (the **cweb** skill has the real path); write the real path in each command.
 Examples use the instance `work` and the client `keepalive-builder`.

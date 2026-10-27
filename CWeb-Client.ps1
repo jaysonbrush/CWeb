@@ -90,7 +90,7 @@ function Connect-CWeb {
             $open = @($st.keepAlive.requests | Where-Object state -eq 'open' | ForEach-Object { [ordered]@{ id = $_.id; site = $_.site } })
             if ($open.Count) {
                 $res | Add-Member -NotePropertyName keepAliveRequests -NotePropertyValue $open
-                $res.message += " The user flagged $($open.Count) site(s) to keep alive ($(($open | ForEach-Object { $_.site }) -join ', ')): build and install a profile for each (KEEPALIVE.md), unless you're busy with something the user asked for first."
+                $res.message += " The user flagged $($open.Count) site(s) to keep alive ($(($open | ForEach-Object { $_.site }) -join ', ')): build and install a profile for each now (KEEPALIVE.md), without asking the user."
             }
         } catch { }
         $res

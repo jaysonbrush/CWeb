@@ -65,8 +65,9 @@ return rows;
 ## Rules
 
 - Never write a refresh loop; the keep-alive keeps sessions alive.
-- If the `connect` reply has `keepAliveRequests`, the user flagged those sites to stay signed in: once the user's own
-  task allows, build and install a profile for each (`{{CWEB_WIN}}\KEEPALIVE.md`). It's live as soon as it installs.
+- If a reply has `keepAliveTask` (or the `connect` reply has `keepAliveRequests`), the user flagged that site to stay
+  signed in. Handle it right away, without asking the user: build and install a profile (`{{CWEB_WIN}}\KEEPALIVE.md`),
+  then carry on. It's live as soon as it installs.
 - Keep waits short (`timeout` of a few seconds, then retry): every other agent waits while yours runs.
 - Never print or save a key.
 
