@@ -27,6 +27,40 @@ function Get-ChromeProfileProcess {
         Where-Object { $_.CommandLine -and $_.CommandLine -match $rx }
 }
 
+function Close-ChromeProfile {
+    # Closes the Chrome running on this profile the way its own menu's Exit does: Browser.close over the DevTools port
+    # Chrome wrote to <profile>\DevToolsActivePort. Chrome saves the session and records a clean exit, so the next
+    # start doesn't say "Chrome didn't shut down correctly". Needs no ChromeDriver (works when the driver hangs or its
+    # server is gone). Waits for every process on the profile to end; -Force kills what is left after the wait (an
+    # unclean exit, so only as a last resort). Returns $true when no Chrome is left on the profile.
+    param([string]$UserDataPath, [int]$TimeoutSeconds = 20, [switch]$Force)
+    if (-not $UserDataPath -or -not @(Get-ChromeProfileProcess -UserDataPath $UserDataPath).Count) { return $true }
+    $portFile = Join-Path $UserDataPath 'DevToolsActivePort'
+    try {
+        $port, $path = @(Get-Content -LiteralPath $portFile -ErrorAction Stop)[0, 1]
+        $ws = [System.Net.WebSockets.ClientWebSocket]::new()
+        $cts = [System.Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds(5))
+        try {
+            [void]$ws.ConnectAsync([Uri]"ws://127.0.0.1:$($port.Trim())$($path.Trim())", $cts.Token).GetAwaiter().GetResult()
+            $msg = [Text.Encoding]::UTF8.GetBytes('{"id":1,"method":"Browser.close"}')
+            [void]$ws.SendAsync([ArraySegment[byte]]::new($msg), [System.Net.WebSockets.WebSocketMessageType]::Text, $true, $cts.Token).GetAwaiter().GetResult()
+        } finally { $ws.Dispose(); $cts.Dispose() }
+    } catch {
+        Write-Host "  Couldn't ask Chrome to close ($($_.Exception.Message))." -ForegroundColor DarkYellow
+    }
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        if (-not @(Get-ChromeProfileProcess -UserDataPath $UserDataPath).Count) { return $true }
+        Start-Sleep -Milliseconds 500
+    }
+    if (-not $Force) { return $false }
+    $left = @(Get-ChromeProfileProcess -UserDataPath $UserDataPath)
+    Write-Host "  Chrome didn't close within ${TimeoutSeconds}s; ending $($left.Count) process(es) (Chrome will offer to restore the tabs)." -ForegroundColor Yellow
+    $left | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    Start-Sleep -Seconds 2
+    return -not @(Get-ChromeProfileProcess -UserDataPath $UserDataPath).Count
+}
+
 function Get-ChromeWorkRoot {
     # Where Chrome-Start keeps profiles and temp folders: the caller's folder (CWeb passes its instance folder),
     # else <CWeb data folder>\scripts for standalone scripts. 
@@ -55,9 +89,8 @@ function Repair-ChromeProfile {
     param([string]$UserDataPath, [string]$ChromePath)
     $leftover = @(Get-ChromeProfileProcess -UserDataPath $UserDataPath)
     if ($leftover.Count) {
-        Write-Host "  Ending $($leftover.Count) leftover Chrome process(es) still using $UserDataPath" -ForegroundColor Yellow
-        $leftover | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-        Start-Sleep -Seconds 2
+        Write-Host "  Closing $($leftover.Count) leftover Chrome process(es) still using $UserDataPath" -ForegroundColor Yellow
+        Close-ChromeProfile -UserDataPath $UserDataPath -Force | Out-Null
     }
     $lv = Join-Path $UserDataPath 'Last Version'
     if (-not (Test-Path $lv)) { return }
@@ -130,7 +163,12 @@ function Chrome-Start {
         $chromeOptions.AddArgument("--user-data-dir=$userDataPath")
         # Persistent profile: reopen like "continue where you left off", so session cookies (site logins that
         # aren't "remember me") survive a restart too.
-        if ($Persist) { $chromeOptions.AddUserProfilePreference("session.restore_on_startup", 1) }
+        # The session.restore_on_startup preference alone doesn't do it: Chrome resets protected settings it didn't
+        # write itself. --restore-last-session reopens the last session's tabs (and its session cookies) every start.
+        if ($Persist) {
+            $chromeOptions.AddUserProfilePreference("session.restore_on_startup", 1)
+            $chromeOptions.AddArgument("--restore-last-session")
+        }
         $chromeOptions.AddArgument("ignore-certificate-errors")
         $chromeOptions.AddArgument("--ignore-ssl-errors=yes")
         $chromeOptions.AddArgument("--ignore-certificate-errors-spki-list")
@@ -169,13 +207,20 @@ function Chrome-Start {
         $chromeDriverPath = Join-Path $script:ChromeScriptRoot "chromedriver-win64"
         $driverService = [OpenQA.Selenium.Chrome.ChromeDriverService]::CreateDefaultService($chromeDriverPath)
         # ChromeDriver's own log (why Chrome failed to launch / crashed) when the server set a log folder.
+        # One file per start (a restart used to overwrite the day's file, losing why the last start failed). Verbose
+        # logs are large, so only the last 3 days are kept.
         if ($env:CWEB_LOGDIR) {
             try {
-                $driverService.LogPath = Join-Path $env:CWEB_LOGDIR "chromedriver-$(Get-Date -Format yyyy-MM-dd).log"
+                Get-ChildItem $env:CWEB_LOGDIR -Filter 'chromedriver-*.log' -ErrorAction SilentlyContinue |
+                    Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-3) } | Remove-Item -Force -ErrorAction SilentlyContinue
+                $driverService.LogPath = Join-Path $env:CWEB_LOGDIR "chromedriver-$(Get-Date -Format yyyy-MM-dd-HHmmss).log"
                 $driverService.EnableVerboseLogging = $true
             } catch { }
         }
-        $driver = New-Object OpenQA.Selenium.Chrome.ChromeDriver($driverService, $chromeOptions)
+        # Command timeout 330 s (Selenium's default is 60): with a saved profile Chrome reopens the last session's tabs,
+        # and ChromeDriver's first commands wait for those pages to load. Heavy sites can take over a minute, which
+        # used to fail the start and leave Chrome running without CWeb.
+        $driver = New-Object OpenQA.Selenium.Chrome.ChromeDriver($driverService, $chromeOptions, [TimeSpan]::FromSeconds(330))
         # Stealth (default on; the selenium-stealth idea, done natively -- no Python): small patches injected before
         # every page's own scripts, each applied only where the browser actually gives itself away.
         if ($Stealth) {
@@ -210,10 +255,11 @@ function Chrome-Start {
                 Write-Host "  Stealth patches not applied: $($_.Exception.Message)" -ForegroundColor DarkYellow
             }
         }
-        $driver.Navigate().GoToUrl("about:blank") | Out-Null
+        # A fresh start shows Chrome's new-tab page: make it blank. A tab reopened from the last session is left as it is.
+        if ($driver.Url -notmatch '^https?:') { $driver.Navigate().GoToUrl("about:blank") | Out-Null }
 
         $tabs = @{
-            main = $driver.WindowHandles[0]
+            main = $driver.CurrentWindowHandle
         }
 
         return @{
@@ -230,6 +276,10 @@ function Chrome-Start {
         while ($inner) { $msg += " | " + $inner.Message; $inner = $inner.InnerException }
         $script:ChromeStartError = $msg
         Write-Host "Failed to start Chrome: $msg" -ForegroundColor Red
+        # Don't leave the Chrome this start opened running without anyone driving it: close it cleanly.
+        if ($driver) { try { $driver.Quit() } catch { } }
+        if ($driverService) { try { $driverService.Dispose() } catch { } }
+        if ($userDataPath) { Close-ChromeProfile -UserDataPath $userDataPath -Force | Out-Null }
         # Safety net: Chrome crashed on start with the saved profile -> set the profile aside and retry once fresh.
         if ($Persist -and -not $IsRetry -and $msg -match 'crashed|not reachable|DevToolsActivePort') {
             try {
@@ -284,12 +334,11 @@ function Chrome-Stop {
         [Parameter(Mandatory=$true)]
         [hashtable]$Browser
     )
-    try {
-        $Browser.Driver.Quit()
-        $Browser.Service.Dispose()
-    } catch {
-        Write-Error "Failed to stop Chrome: $_"
-    }
+    # Quit sends Chrome a clean Browser.close. If the driver doesn't answer, Close-ChromeProfile asks Chrome directly.
+    # Either way this waits until Chrome has really exited, so a restart right after (an update) finds the profile free.
+    try { $Browser.Driver.Quit() } catch { Write-Host "  ChromeDriver didn't quit ($($_.Exception.Message)); closing Chrome directly." -ForegroundColor DarkYellow }
+    try { $Browser.Service.Dispose() } catch { }
+    if ($Browser.UserDataPath) { Close-ChromeProfile -UserDataPath $Browser.UserDataPath -TimeoutSeconds 30 -Force | Out-Null }
 
     Remove-ChromeArtifact -Path $Browser.TempPath -Label "temp path"
     # A persistent profile is kept (logins, cookies) -- only throwaway profiles are deleted.

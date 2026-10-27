@@ -60,8 +60,16 @@ function Stop-Instance($r) {
     $info = Get-CWebServerInfo -ServerFile $r.Instance.ServerFile
     if (-not $info) { Say "  Stopped $($r.Instance.Name)."; return $true }
     Say "  $($r.Instance.Name) didn't stop within 30 seconds." Yellow
-    if (-not (Confirm-CWeb "  Force-stop the $($r.Instance.Name) server (process $($info.pid))? Its Chrome window is closed on the next start.")) { return $false }
+    if (-not (Confirm-CWeb "  Force-stop the $($r.Instance.Name) server (process $($info.pid))? Its Chrome window is closed first, cleanly.")) { return $false }
+    # Chrome first, the way its own Exit does (session saved, no "didn't shut down correctly" on the next start).
+    . (Join-Path $root 'browser\Browser-Functions.ps1')
+    if (-not (Close-ChromeProfile -UserDataPath $r.Instance.ProfileDir -TimeoutSeconds 30)) {
+        Say "  Chrome didn't close; it is ended with the server (it will offer to restore its tabs)." Yellow
+        Close-ChromeProfile -UserDataPath $r.Instance.ProfileDir -TimeoutSeconds 1 -Force | Out-Null
+    }
+    $drivers = @(Get-CimInstance Win32_Process -Filter "Name='chromedriver.exe' AND ParentProcessId=$([int]$info.pid)" -ErrorAction SilentlyContinue)
     Stop-Process -Id ([int]$info.pid) -Force
+    $drivers | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }   # Chrome is closed; its driver would linger
     Start-Sleep -Seconds 2
     Say "  Force-stopped $($r.Instance.Name)."
     return $true

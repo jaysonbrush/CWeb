@@ -339,7 +339,7 @@ In it:
 | `approvals.json` | Approved clients: fingerprints only. |
 | `clients\<client>.key` | Keys saved by `connect` (`.ticket` while waiting). |
 | `keepalive-sites.json`, `keepalive-requests.json` | Sites switched off here; keep-alive requests. |
-| `logs\` | `server-<date>.log` (one line per command: `[time] client action [tab] target ms`), `chromedriver-<date>.log`, `launcher-<date>.log`, `import-*.log`. Kept 7 days. |
+| `logs\` | `server-<date>.log` (one line per command: `[time] client action [tab] target ms`), `chromedriver-<date>-<time>.log` (one per start, kept 3 days: they are large), `launcher-<date>.log`, `import-*.log`. Kept 7 days. |
 
 CWeb writes nothing outside the data folder and the repo's `browser\` downloads.
 
@@ -367,7 +367,7 @@ CWeb writes nothing outside the data folder and the repo's `browser\` downloads.
 | "Tab 'x' belongs to …" | Open your own tab with `newtab`, or ask the owner/the user. |
 | "Your tab was closed" | `listtabs`, then `switchtab`. |
 | "No tab named 'x'" | `listtabs`; a tab still on Chrome's new-tab page has no name until it loads a site. |
-| Server didn't start | `<data folder>\<instance>\logs\server-<date>.log` and `chromedriver-<date>.log`. Chrome's start error is also on the status page. |
+| Server didn't start | `<data folder>\<instance>\logs\server-<date>.log` and that start's `chromedriver-<date>-<time>.log`. Chrome's start error is also on the status page. |
 | "Chrome module not found" / Chrome missing | Run `Setup-CWeb.cmd`. |
 | Commands are slow | Another client is in a long wait; commands run one at a time. |
 | Status page "isn't running" | Start the instance; reload. If its port was taken, it may be on another: the launcher prints the address. |
@@ -379,6 +379,7 @@ CWeb writes nothing outside the data folder and the repo's `browser\` downloads.
 
 | Version | Changes |
 |---|---|
+| 2026.10.27.021 | Clean Chrome shutdown and restart. Stopping (status page, updates) closes Chrome the way its own Exit does and waits until it has exited, so the next start never says Chrome didn't shut down correctly; if ChromeDriver doesn't answer, Chrome is closed over its DevTools port, and `Update-CWeb`'s force-stop closes Chrome cleanly before ending the server. Restarts reopen the last session's tabs and session sign-ins (`--restore-last-session`: Chrome had been resetting the preference CWeb set). Starts wait up to 330 s for ChromeDriver instead of 60 s; a start that still fails closes the Chrome it opened. One ChromeDriver log per start, kept 3 days. |
 | 2026.10.27.020 | Keep-alive no longer switches tabs: checks, renewals and the install-time `probe()` run over Chrome's DevTools connection, so no tab comes to the front and agents' tabs stay put. `probe()`/`renew()` may return a promise. Any API reply can carry a `keepAliveTask` (a site the user flagged, handed to one client at a time for 15 minutes): agents install it without asking the user. |
 | 2026.10.26.019 | Keep-alive install messages name the tab once (they said `tab tab x`). |
 | 2026.10.26.018 | Access: sessions of one client no longer push each other out (a session whose request another session collected uses the saved key instead of asking again; a re-approval adds a key instead of replacing one; a bad key is only removed if no session saved a newer one). Keep-alive: agents hear about requests in the `connect` reply and install profiles with `op: install`, live at once after one `probe()` on the site's tab (no draft review; `op: draft` installs too). Shorter `KEEPALIVE.md`. |

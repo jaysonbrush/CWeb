@@ -31,7 +31,7 @@ Double-click `Update-CWeb.cmd` in the CWeb folder. It:
 
 1. Checks for a new version. If there's none, it stops nothing and exits.
 2. Lists the running instances and the agents working in them, and **asks before stopping them**: stopping closes
-   their Chrome windows (sign-ins are kept) and interrupts those agents.
+   their Chrome windows (sign-ins and open tabs come back when they restart) and interrupts those agents.
 3. Stops them cleanly, pulls the new version (`git pull --ff-only`: it never overwrites changes you made here),
    runs setup (new Chrome if the pin changed, data moves, self-check), and starts again the instances that were
    running.
