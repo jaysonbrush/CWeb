@@ -63,7 +63,9 @@ function Get-KeepAliveState {
 function Invoke-KeepAliveSite {
     # Runs the profile's probe() or renew() in its tab over DevTools.
     param($Site, [ValidateSet('probe', 'renew')][string]$Call, [string]$TabId)
-    $js = "(function () {`n" + $Site.Source + "`n;return Promise.resolve(site.$Call()).then(function (r) { return JSON.stringify(r === undefined ? null : r); });`n})()"
+    # Marks the tab as the site's (sessionStorage survives Chrome restoring the tab), so a restart finds it again.
+    $mark = "try { sessionStorage.setItem('cweb-keepalive', $(ConvertTo-Json $Site.Id)); } catch (e) {}"
+    $js = "(function () {`n$mark`n" + $Site.Source + "`n;return Promise.resolve(site.$Call()).then(function (r) { return JSON.stringify(r === undefined ? null : r); });`n})()"
     $raw = Invoke-DevToolsScript -TabId $TabId -Expression $js
     return $raw | ConvertFrom-Json
 }
@@ -74,12 +76,20 @@ function Get-KeepAliveTab {
     param($Site, $State, [hashtable]$Pages)
     if ($State.Tab -and $Pages.ContainsKey($State.Tab)) { return $State.Tab }
     $State.Tab = $null
-    if (-not $Site.Url) {
-        return ($Pages.Values | Where-Object { [string]$_.url -match $Site.Match } | Select-Object -First 1).id
+    $onSite = @($Pages.Values | Where-Object { [string]$_.url -match $Site.Match })
+    if (-not $Site.Url) { return ($onSite | Select-Object -First 1).id }
+    $name = "keepalive-$($Site.Id)"
+    # Its tab from before a restart (Chrome restored it): marked in sessionStorage by an earlier check.
+    foreach ($p in $onSite) {
+        try { $mine = (Invoke-DevToolsScript -TabId ([string]$p.id) -Expression "sessionStorage.getItem('cweb-keepalive')" -TimeoutSeconds 5) -eq $Site.Id } catch { $mine = $false }
+        if (-not $mine) { continue }
+        foreach ($n in @($script:Browser.Tabs.Keys | Where-Object { $script:Browser.Tabs[$_] -eq [string]$p.id })) { $script:Browser.Tabs.Remove($n) }
+        $State.Tab = [string]$p.id
+        $script:Browser.Tabs[$name] = $State.Tab
+        return $State.Tab
     }
     $id = New-DevToolsTab -Url $Site.Url
     $State.Tab = $id
-    $name = "keepalive-$($Site.Id)"
     $script:Browser.Tabs[$name] = $id
     Write-KeepAliveLog "$($Site.Name): opened its tab ($name, $($Site.Url))"
     return $null
