@@ -185,6 +185,9 @@ function Chrome-Start {
         $chromeOptions.AddArgument("--disable-backgrounding-occluded-windows")
         # Window label, so several automation windows (CWeb instances) can be told apart.
         if ($WindowName) { $chromeOptions.AddArgument("--window-name=$WindowName") }
+        # Chrome's own log goes into the ChromeDriver log; errors only (ChromeDriver asks for everything, which writes
+        # every site's console messages).
+        $chromeOptions.AddArgument("--log-level=2")
 
         # Running from a network drive (mapped letter or \\server path): Chrome crashes on start with its sandbox on
         # (verified 2026-10-02: N: copy + known-good profile + sandbox = "Chrome failed to start: crashed"; same

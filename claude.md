@@ -280,7 +280,10 @@ credentials, no customer data.
 ## Starting, stopping, restarting
 
 - **Start** (the user, not agents): `Start-CWeb.cmd <instance>` or the status page's **Start** button. Safe to
-  repeat: one server per instance (a named lock); a second one exits.
+  repeat: one server per instance (a named lock); a second one exits. If the server runs but doesn't answer, the
+  launcher waits a minute, then offers to restart it (Chrome closed cleanly first). If its Chrome was closed (window
+  closed, or it exited), the server keeps running and the launcher or the status page's **Open Chrome** reopens it;
+  until then API calls answer "No browser running".
 - **Stop:** the status page's **Stop server** (closes Chrome cleanly, logins kept). From a script:
   `curl -s -X POST http://127.0.0.1:<port>/status/stopserver -H "X-Status-Request: 1" -H "Origin: http://127.0.0.1:<port>" -d '{}'`.
   Only when the user asks: it stops the browser for every client.
@@ -379,6 +382,7 @@ CWeb writes nothing outside the data folder and the repo's `browser\` downloads.
 
 | Version | Changes |
 |---|---|
+| 2026.10.28.023 | A closed Chrome no longer breaks the server. Before, once Chrome's window was closed or Chrome exited, every status request failed ("array index evaluated to null"), so the launcher thought the server was down, started a second one that exited at once, and waited 2 minutes. Now the server notices, the status page says so and has **Open Chrome**, and `Start-CWeb` reopens it. `Start-CWeb` also offers to restart a server that runs but doesn't answer (Chrome closed cleanly first), stops waiting at once if a new server exits, and waits up to 6 minutes for Chrome to restore many tabs. `Update-CWeb` stops a server that isn't answering too. Chrome writes only errors to the ChromeDriver log, and the startup file check no longer fills the server log with `Zone.Identifier` errors. |
 | 2026.10.27.022 | ChromeDriver logs warnings and errors only. Every version before logged every command and reply in full (about 1 GB a day per instance); those day files (`chromedriver-<date>.log`) are deleted on the next start. ChromeDriver logs are kept 7 days like the other logs. |
 | 2026.10.27.021 | Clean Chrome shutdown and restart. Stopping (status page, updates) closes Chrome the way its own Exit does and waits until it has exited, so the next start never says Chrome didn't shut down correctly; if ChromeDriver doesn't answer, Chrome is closed over its DevTools port, and `Update-CWeb`'s force-stop closes Chrome cleanly before ending the server. Restarts reopen the last session's tabs and session sign-ins (`--restore-last-session`: Chrome had been resetting the preference CWeb set). Starts wait up to 330 s for ChromeDriver instead of 60 s; a start that still fails closes the Chrome it opened. One ChromeDriver log per start, kept 3 days. |
 | 2026.10.27.020 | Keep-alive no longer switches tabs: checks, renewals and the install-time `probe()` run over Chrome's DevTools connection, so no tab comes to the front and agents' tabs stay put. `probe()`/`renew()` may return a promise. Any API reply can carry a `keepAliveTask` (a site the user flagged, handed to one client at a time for 15 minutes): agents install it without asking the user. |

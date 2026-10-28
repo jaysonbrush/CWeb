@@ -135,7 +135,7 @@
   </div>
 
   <div class="card pill bad" id="offline">The server isn't running. Start it with Start-CWeb, then reload this page.</div>
-  <div class="card pill bad" id="starterr"></div>
+  <div class="card pill bad" id="starterr"><span id="starterr-text"></span> <button id="openchrome" type="button" title="Open this instance's Chrome again; its tabs and sign-ins come back">Open Chrome</button></div>
   <div class="card" id="accessbanner"><span id="accessbanner-text"></span><a href="#access">Review</a></div>
 
   <div class="grid">
@@ -295,6 +295,17 @@
       if (!res.success) { alert('Not stopped: ' + (res.error || 'unknown error')); return; }
       document.getElementById('stop').disabled = true;
     } catch (e) { alert('Not stopped: ' + e); }
+  };
+
+  document.getElementById('openchrome').onclick = async () => {
+    const btn = document.getElementById('openchrome');
+    btn.disabled = true; btn.textContent = 'Opening...';
+    try {
+      const res = await statusAction('/status/startbrowser', {});
+      if (!res.success) alert('Chrome did not open: ' + (res.error || 'unknown error'));
+    } catch (e) { alert('Chrome did not open: ' + e); }
+    btn.disabled = false; btn.textContent = 'Open Chrome';
+    poll();
   };
 
   document.getElementById('nt-form').addEventListener('submit', async e => {
@@ -707,8 +718,10 @@
     renderInstances(data.instances || [], sv.instance);
     renderAccess(data.access || { pending: [], clients: [] });
     const se = document.getElementById('starterr');
-    se.textContent = br.startError ? `Chrome didn't start: ${br.startError}` : '';
-    se.style.display = br.startError ? 'block' : 'none';
+    const down = !br.running && (br.startError || br.closed);
+    document.getElementById('starterr-text').textContent = !down ? ''
+      : br.closed ? `Chrome was closed at ${br.closed.slice(11, 16)} (its window was closed, or it exited).` : `Chrome didn't start: ${br.startError}`;
+    se.style.display = down ? 'block' : 'none';
     document.getElementById('ka').replaceChildren(
       el('span', ka.enabled ? `keep-alive on · ${ka.sites.length} site profiles` : 'keep-alive off', 'pill ' + (ka.enabled ? 'ok' : 'warn')));
     document.getElementById('uptime').textContent = uptime(up);

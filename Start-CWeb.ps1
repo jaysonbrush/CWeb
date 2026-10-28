@@ -36,12 +36,28 @@ Write-Host "==== Start-CWeb $version -- instance '$($inst.Name)' ($($inst.Label)
 
 # 1. Server -- start it unless this instance's server is already running.
 $st = Get-CWebRunningServer -Instance $inst
+$info = if (-not $st) { Get-CWebServerInfo -ServerFile $inst.ServerFile }
+if ($info) {
+    # Its process runs but doesn't answer: still opening Chrome, or stuck. Starting another server wouldn't help (it
+    # finds the instance lock held and exits), so wait a little, then offer to restart it.
+    Write-Host "CWeb '$($inst.Name)' is running (process $($info.pid)) but not answering yet. Waiting up to a minute..."
+    $st = Wait-CWebServer -Instance $inst -Seconds 60
+    if (-not $st -and (Get-CWebServerInfo -ServerFile $inst.ServerFile)) {
+        Write-Host "It still isn't answering." -ForegroundColor Yellow
+        $a = try { Read-Host 'Restart it? Its Chrome is closed cleanly first, so your tabs and sign-ins come back. [Y/n]' } catch { 'n' }
+        if ($a -match '^(n|no)$') { Stop-WithError "Left it running (process $($info.pid))." $inst.LogDir }
+        Write-Host 'Stopping it...'
+        Stop-CWebServerProcess -Instance $inst -Root $dir | Out-Null
+    }
+}
+$started = $false
 if ($st) {
     Write-Host "CWeb '$($inst.Name)' is already running."
 } else {
-    Write-Host "Starting CWeb '$($inst.Name)'..."
+    Write-Host "Starting CWeb '$($inst.Name)' (Chrome restoring many tabs can take a minute or two)..."
     try { $st = Start-CWebServer -Instance $inst -Root $dir } catch { Stop-WithError $_.Exception.Message $inst.LogDir }
     Write-Host 'Server is up.'
+    $started = $true
 }
 # The server may have moved off a port another program holds; its status data has the real one.
 if ([int]$st.server.port -ne $inst.ConfiguredPort) {
@@ -49,7 +65,18 @@ if ([int]$st.server.port -ne $inst.ConfiguredPort) {
     $statusUrl = "http://127.0.0.1:$($st.server.port)/status"
 }
 
-# 2. Browser -- the server opened it; report what happened.
+# 2. Browser -- the server opened it at start. On a server that was already running, Chrome may have been closed
+# since (its window closed, or it exited): ask the server to open it again.
+if (-not $st.browser.running -and -not $started) {
+    Write-Host "Chrome isn't open$(if ($st.browser.closed) { " (closed at $($st.browser.closed.Substring(11, 5)))" }). Opening it..."
+    $port = [int]$st.server.port
+    try {
+        $r = Invoke-RestMethod "http://127.0.0.1:$port/status/startbrowser" -Method POST -ContentType 'application/json' -Body '{}' `
+            -Headers @{ 'X-Status-Request' = '1'; 'Origin' = "http://127.0.0.1:$port" } -TimeoutSec 360
+        if (-not $r.success) { Stop-WithError "Chrome did not start: $($r.error)" $inst.LogDir }
+        $st = Get-CWebRunningServer -Instance $inst
+    } catch { Stop-WithError "Chrome did not start: $($_.Exception.Message)" $inst.LogDir }
+}
 if ($st.browser.running) {
     Write-Host "Chrome is open ($($st.browser.url))."
 } elseif ($st.browser.startError) {

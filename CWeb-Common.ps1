@@ -171,9 +171,47 @@ function Get-CWebRunningServer {
     try { return Invoke-RestMethod -Uri "http://127.0.0.1:$([int]$info.port)/status.json" -TimeoutSec 5 } catch { return $null }
 }
 
+function Wait-CWebServer {
+    # Waits until the instance's server answers and returns its status data. Gives up ($null) as soon as the server
+    # process is gone (-Process: the one just launched; else the one server.json names), or when the time is up.
+    param($Instance, [int]$Seconds, [System.Diagnostics.Process]$Process)
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    while ((Get-Date) -lt $deadline) {
+        $st = Get-CWebRunningServer -Instance $Instance
+        if ($st) { return $st }
+        if ($Process) { if ($Process.HasExited) { return $null } }
+        elseif (-not (Get-CWebServerInfo -ServerFile $Instance.ServerFile)) { return $null }
+        Start-Sleep -Seconds 1
+    }
+    return $null
+}
+
+function Stop-CWebServerProcess {
+    # Ends an instance's server that doesn't answer or won't stop. Its Chrome is closed first the way Chrome's own Exit
+    # does (session saved, so the next start has no "Restore pages?"), then the server and its ChromeDriver. Finds the
+    # server by server.json and by command line, so one whose server.json is gone is found too. Returns how many it ended.
+    param($Instance, [string]$Root = $PSScriptRoot)
+    . (Join-Path $Root 'browser\Browser-Functions.ps1')
+    if (-not (Close-ChromeProfile -UserDataPath $Instance.ProfileDir -TimeoutSeconds 30)) {
+        Write-Host "  Chrome didn't close; it is ended with the server (it will offer to restore its tabs)." -ForegroundColor Yellow
+        Close-ChromeProfile -UserDataPath $Instance.ProfileDir -TimeoutSeconds 1 -Force | Out-Null
+    }
+    $info = Get-CWebServerInfo -ServerFile $Instance.ServerFile
+    $pattern = "CWeb-Server\.ps1.*-Instance\s+`"?$([regex]::Escape($Instance.Name))`"?(\s|$)"
+    $ids = @(@(if ($info) { [int]$info.pid }) + @(Get-CimInstance Win32_Process -Filter "Name='pwsh.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -match $pattern -and $_.ProcessId -ne $PID } | ForEach-Object { [int]$_.ProcessId }) | Sort-Object -Unique)
+    foreach ($id in $ids) {
+        $drivers = @(Get-CimInstance Win32_Process -Filter "Name='chromedriver.exe' AND ParentProcessId=$id" -ErrorAction SilentlyContinue)
+        Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
+        $drivers | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }   # Chrome is closed; its driver would linger
+    }
+    Start-Sleep -Seconds 2   # the instance lock is free once the process is gone
+    return $ids.Count
+}
+
 function Start-CWebServerProcess {
-    # Launches the instance's server and returns at once (no waiting). A second server for a running instance
-    # exits by itself (the instance lock), so a double start is harmless.
+    # Launches the instance's server and returns its process at once (no waiting). A second server for a running
+    # instance exits by itself with code 2 (the instance lock), so a double start is harmless.
     param($Instance, [string]$Root = $PSScriptRoot)
     if (-not (Get-Command pwsh -ErrorAction SilentlyContinue)) {
         throw 'PowerShell 7 (pwsh) is not installed -- the server needs it. Install: winget install --id Microsoft.PowerShell --source winget'
@@ -182,9 +220,9 @@ function Start-CWebServerProcess {
     # Hidden by default: its output is in the server log and its controls are on the status page.
     # "showServerWindow": true on the instance in instances.json brings the window back.
     if ($Instance.ShowServerWindow) {
-        Start-Process pwsh -WorkingDirectory $Root -ArgumentList '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', $server, '-Instance', $Instance.Name
+        Start-Process pwsh -PassThru -WorkingDirectory $Root -ArgumentList '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', $server, '-Instance', $Instance.Name
     } else {
-        Start-Process pwsh -WorkingDirectory $Root -WindowStyle Hidden -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $server, '-Instance', $Instance.Name
+        Start-Process pwsh -PassThru -WorkingDirectory $Root -WindowStyle Hidden -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $server, '-Instance', $Instance.Name
     }
 }
 
@@ -302,18 +340,27 @@ function Clear-CWebRemovedMark {
 }
 
 function Start-CWebServer {
-    # Starts the instance's server unless it's already running, and waits until it answers (it opens Chrome before
-    # serving requests). Returns the status data. Throws if it doesn't answer in time.
+    # Starts the instance's server unless it's already running, and waits until it answers. It opens Chrome before
+    # serving requests, which can take minutes while Chrome restores many tabs (ChromeDriver allows 330 s), so it waits
+    # up to 6 minutes, but stops waiting at once if the server exits. Returns the status data; throws if it doesn't answer.
     # The server gets its own (hidden) console via Start-Process, so it outlives the session that started it.
-    param($Instance, [string]$Root = $PSScriptRoot, [int]$WaitSeconds = 120)
+    param($Instance, [string]$Root = $PSScriptRoot, [int]$WaitSeconds = 360)
     $st = Get-CWebRunningServer -Instance $Instance
     if ($st) { return $st }
-    Start-CWebServerProcess -Instance $Instance -Root $Root
-    $deadline = (Get-Date).AddSeconds($WaitSeconds)
-    while ((Get-Date) -lt $deadline) {
-        Start-Sleep -Seconds 1
-        $st = Get-CWebRunningServer -Instance $Instance
+    $info = Get-CWebServerInfo -ServerFile $Instance.ServerFile
+    if ($info) {
+        # Its process runs but doesn't answer: still opening Chrome, or stuck. A new server would only find the lock held.
+        $st = Wait-CWebServer -Instance $Instance -Seconds 60
         if ($st) { return $st }
+        throw "CWeb '$($Instance.Name)' is running (process $($info.pid)) but doesn't answer. Start-CWeb offers to restart it. Logs: $($Instance.LogDir)"
+    }
+    $proc = Start-CWebServerProcess -Instance $Instance -Root $Root
+    $st = Wait-CWebServer -Instance $Instance -Seconds $WaitSeconds -Process $proc
+    if ($st) { return $st }
+    if ($proc.HasExited) {
+        $why = if ($proc.ExitCode -eq 2) { 'another server for this instance holds its lock (one that is stuck, or still shutting down). Start-CWeb offers to restart it' }
+               else { "the server exited (code $($proc.ExitCode))" }
+        throw "CWeb '$($Instance.Name)' didn't start: $why. Logs: $($Instance.LogDir)"
     }
     throw "CWeb '$($Instance.Name)' did not answer within $WaitSeconds seconds. Logs: $($Instance.LogDir)"
 }

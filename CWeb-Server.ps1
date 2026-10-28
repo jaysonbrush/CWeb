@@ -58,8 +58,9 @@ foreach ($req in @('browser\Browser-Functions.ps1', 'browser\Selenium\Selenium.W
 }
 # Per-file try/catch: some drives (network shares) throw on alternate-stream reads even with SilentlyContinue --
 # a file we can't check is simply skipped, never fatal.
+# File.Exists on "<file>:Zone.Identifier" answers without throwing, so nothing lands in the server log for clean files.
 $blocked = @(Get-ChildItem $PSScriptRoot -Recurse -File -Include *.ps1, *.dll, *.exe -ErrorAction SilentlyContinue | Where-Object {
-    try { [bool](Get-Item -LiteralPath $_.FullName -Stream Zone.Identifier -ErrorAction Stop) } catch { $false }
+    try { [System.IO.File]::Exists("$($_.FullName):Zone.Identifier") } catch { $false }
 })
 if ($blocked.Count) { Write-Host "  WARNING: $($blocked.Count) file(s) are marked as downloaded/blocked by Windows -- run: Get-ChildItem '$PSScriptRoot' -Recurse | Unblock-File" -ForegroundColor Yellow }
 
@@ -90,6 +91,7 @@ $script:Caller = $null   # the approved client making the current /api request
 # Browser state
 $script:Browser = $null
 $script:BrowserStartError = $null   # why the automatic start at launch failed, for the status page
+$script:BrowserClosed = $null       # when Chrome was closed under the server (window closed, or it exited), for the status page
 $script:StopRequested = $false   # set by the status page's Stop server button
 
 # Session keep-alive (profiles in <data folder>\keepalive\; see claude.md). Runs between API requests, so it never
@@ -158,9 +160,27 @@ function Start-InstanceBrowser {
         return @{ success = $false; error = "Chrome did not start: $why" }
     }
     $script:BrowserStartError = $null
+    $script:BrowserClosed = $null
     $where = if ($Persist) { $script:ProfileDir } else { 'throwaway profile' }
     Write-Host "  Browser started ($where)"
     return @{ success = $true; message = "Browser started"; profile = $where }
+}
+
+function Test-InstanceBrowser {
+    # Chrome can close under the server: the user closes its window, or it crashes. The driver then reports no tabs at
+    # all (WindowHandles is null) instead of failing. Once no Chrome process is left on the profile either, this
+    # drops the dead driver and records the time, so the status page keeps working and says so, and Start-CWeb or
+    # the status page's Open Chrome brings it back. Called before each request and keep-alive pass (one driver call).
+    if (-not $script:Browser) { return }
+    try { $open = @(@($script:Browser.Driver.WindowHandles) | Where-Object { $_ }).Count } catch { $open = 0 }
+    if ($open -or @(Get-ChromeProfileProcess -UserDataPath $script:Browser.UserDataPath).Count) { return }
+    Write-Host "[$(Get-Date -Format HH:mm:ss)] Chrome was closed (its window was closed, or it exited). Start-CWeb or the status page's Open Chrome opens it again." -ForegroundColor Yellow
+    try { $script:Browser.Driver.Quit() } catch { }
+    try { $script:Browser.Service.Dispose() } catch { }
+    $script:Browser = $null
+    $script:BrowserClosed = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    $script:KeepAlive.Tabs.Clear()
+    Reset-ClientState
 }
 
 function Invoke-BrowserAction {
@@ -843,7 +863,7 @@ function Get-KeepAliveStatus {
         }
     }
     # Tabs opened since the last keep-alive pass: listed now (with what's known), checked on the next pass.
-    try { $handles = @($script:Browser.Driver.WindowHandles) } catch { return }
+    try { $handles = @(@($script:Browser.Driver.WindowHandles) | Where-Object { $_ }) } catch { return }
     foreach ($h in $handles) {
         if ($script:KeepAlive.Tabs.ContainsKey($h)) { continue }
         [ordered]@{
@@ -981,7 +1001,7 @@ function Add-RequestStat {
 }
 
 function Get-StatusData {
-    $browser = [ordered]@{ running = [bool]$script:Browser; startError = $script:BrowserStartError; currentId = $null; currentTab = $null; url = $null; tabCount = 0 }
+    $browser = [ordered]@{ running = [bool]$script:Browser; startError = $script:BrowserStartError; closed = $script:BrowserClosed; currentId = $null; currentTab = $null; url = $null; tabCount = 0 }
     if ($script:Browser) {
         try {
             $d = $script:Browser.Driver
@@ -1013,7 +1033,10 @@ function Get-StatusData {
         tabUse    = $(
             $use = [ordered]@{}
             if ($script:Browser) {
-                foreach ($h in @($script:Browser.Driver.WindowHandles)) {
+                # Empty if Chrome has just closed (the driver then answers null, not an error); Test-InstanceBrowser
+                # notices that on the next pass.
+                $handles = try { @(@($script:Browser.Driver.WindowHandles) | Where-Object { $_ }) } catch { @() }
+                foreach ($h in $handles) {
                     $users = @($script:ClientCtx.GetEnumerator() | Where-Object { $_.Value.Handle -eq $h } | ForEach-Object { $_.Key } | Sort-Object)
                     $use[$h] = [ordered]@{ owner = $script:TabOwners[$h]; users = $users }
                 }
@@ -1156,7 +1179,7 @@ function Invoke-StatusAction {
             if ($other.Name -eq $script:InstanceName -or (Test-CWebServerProcess -Instance $other)) {
                 $result = @{ success = $true; name = $other.Name; port = $other.Port; message = 'Already running.' }
             } else {
-                Start-CWebServerProcess -Instance $other -Root $script:CWebRoot
+                Start-CWebServerProcess -Instance $other -Root $script:CWebRoot | Out-Null
                 $result = @{ success = $true; name = $other.Name; label = $other.Label; port = $other.Port; message = "Starting $($other.Label) on port $($other.Port)." }
             }
             $target = "$($other.Name) port $($other.Port)"
@@ -1170,6 +1193,14 @@ function Invoke-StatusAction {
             # Answer first; the main loop then exits and its cleanup closes Chrome and the listener.
             $script:StopRequested = $true
             $result = @{ success = $true; message = 'Stopping: closing Chrome, then the server.' }
+            $target = 'from status page'
+        } elseif ($action -eq 'startbrowser') {
+            # Open Chrome again after it was closed (status page, Start-CWeb). Its tabs and sign-ins come back.
+            if ($script:Browser) { $result = @{ success = $true; message = 'Chrome is already open.' } }
+            else {
+                $result = Start-InstanceBrowser -Hidden $script:Inst.Hidden -Persist $true
+                if ($result.success) { Reset-ClientState }
+            }
             $target = 'from status page'
         } elseif ($action -eq 'newtab') {
             $result = Open-TabFromStatus -Url ([string]$body.url) -Name ([string]$body.name)
@@ -1212,7 +1243,8 @@ function Send-StatusPage {
         $Response.ContentLength64 = $buffer.Length
         $Response.OutputStream.Write($buffer, 0, $buffer.Length)
     } catch {
-        Write-Host "  (status page not sent: $($_.Exception.Message))" -ForegroundColor DarkYellow
+        $at = $_.InvocationInfo
+        Write-Host "  (status page not sent: $($_.Exception.Message)$(if ($at.ScriptName) { " at $(Split-Path $at.ScriptName -Leaf):$($at.ScriptLineNumber)" }))" -ForegroundColor DarkYellow
     } finally {
         try { $Response.OutputStream.Close() } catch { }
     }
@@ -1276,6 +1308,7 @@ try {
     $pending = $listener.GetContextAsync()
     while ($listener.IsListening) {
         if (((Get-Date) - $script:KeepAlive.LastTick).TotalSeconds -ge $script:KeepAlive.TickSeconds) {
+            try { Test-InstanceBrowser } catch { Write-Host "  (Chrome check failed: $($_.Exception.Message))" -ForegroundColor DarkYellow }
             try { Invoke-KeepAliveTick } catch { Write-KeepAliveLog "check failed: $($_.Exception.Message)" Yellow }
         }
         try {
@@ -1284,6 +1317,7 @@ try {
         } catch { break }   # listener stopped (shutdown)
         $pending = $listener.GetContextAsync()
         Save-CWebAccessIfDue
+        try { Test-InstanceBrowser } catch { Write-Host "  (Chrome check failed: $($_.Exception.Message))" -ForegroundColor DarkYellow }
         try {
         $request = $context.Request
         $response = $context.Response
@@ -1293,7 +1327,7 @@ try {
             Send-StatusPage -Request $request -Response $response
             continue
         }
-        if ($request.HttpMethod -eq "POST" -and $request.Url.AbsolutePath -in @('/status/closetab', '/status/newtab', '/status/stopserver', '/status/approve', '/status/deny', '/status/revoke', '/status/startinstance', '/status/newinstance', '/status/kasite', '/status/karequest', '/status/kadismiss', '/status/kaenable', '/status/kadiscard', '/status/deleteprofile', '/status/deleteinstance')) {
+        if ($request.HttpMethod -eq "POST" -and $request.Url.AbsolutePath -in @('/status/closetab', '/status/newtab', '/status/stopserver', '/status/startbrowser', '/status/approve', '/status/deny', '/status/revoke', '/status/startinstance', '/status/newinstance', '/status/kasite', '/status/karequest', '/status/kadismiss', '/status/kaenable', '/status/kadiscard', '/status/deleteprofile', '/status/deleteinstance')) {
             Invoke-StatusAction -Request $request -Response $response
             if ($script:StopRequested) { Write-Host "[$(Get-Date -Format HH:mm:ss)] Stop requested from the status page"; break }
             continue

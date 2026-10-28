@@ -35,42 +35,41 @@ function Confirm-CWeb($question) {
 function Invoke-Git { & git.exe -C $root @args 2>&1; if ($LASTEXITCODE) { throw "git $($args -join ' ') failed (exit $LASTEXITCODE)." } }
 
 function Get-RunningInstances {
-    # Instances of this machine whose server answers, with what the user should know before they're stopped.
+    # Instances of this machine whose server runs, with what the user should know before they're stopped. One that runs
+    # but doesn't answer is listed too (NotAnswering): it has to be stopped before the update all the same.
     foreach ($name in @((Get-CWebInstanceTable -Root $root).Keys)) {
         $i = Get-CWebInstance -Name $name -Root $root
         $st = Get-CWebRunningServer -Instance $i
-        if (-not $st) { continue }
+        if (-not $st) {
+            $info = Get-CWebServerInfo -ServerFile $i.ServerFile
+            if ($info) { [pscustomobject]@{ Instance = $i; Port = [int]$info.port; Tabs = '?'; Agents = @(); NotAnswering = $true } }
+            continue
+        }
         $agents = @($st.tabUse.PSObject.Properties | ForEach-Object { $_.Value.owner; $_.Value.users } | Where-Object { $_ } | Sort-Object -Unique)
-        [pscustomobject]@{ Instance = $i; Port = [int]$st.server.port; Tabs = [int]$st.browser.tabCount; Agents = $agents }
+        [pscustomobject]@{ Instance = $i; Port = [int]$st.server.port; Tabs = [int]$st.browser.tabCount; Agents = $agents; NotAnswering = $false }
     }
 }
 
 function Stop-Instance($r) {
     # The status page's Stop server: closes Chrome cleanly (sign-ins kept), then the server exits.
     $p = $r.Port
-    try {
-        Invoke-RestMethod "http://127.0.0.1:$p/status/stopserver" -Method POST -ContentType 'application/json' -Body '{}' `
-            -Headers @{ 'X-Status-Request' = '1'; 'Origin' = "http://127.0.0.1:$p" } -TimeoutSec 30 | Out-Null
-    } catch { }
-    $deadline = (Get-Date).AddSeconds(30)
-    while ((Get-Date) -lt $deadline) {
-        if (-not (Test-CWebServerProcess -Instance $r.Instance)) { Say "  Stopped $($r.Instance.Name)."; return $true }
-        Start-Sleep -Seconds 1
+    if (-not $r.NotAnswering) {
+        try {
+            Invoke-RestMethod "http://127.0.0.1:$p/status/stopserver" -Method POST -ContentType 'application/json' -Body '{}' `
+                -Headers @{ 'X-Status-Request' = '1'; 'Origin' = "http://127.0.0.1:$p" } -TimeoutSec 30 | Out-Null
+        } catch { }
+        $deadline = (Get-Date).AddSeconds(30)
+        while ((Get-Date) -lt $deadline) {
+            if (-not (Test-CWebServerProcess -Instance $r.Instance)) { Say "  Stopped $($r.Instance.Name)."; return $true }
+            Start-Sleep -Seconds 1
+        }
     }
     $info = Get-CWebServerInfo -ServerFile $r.Instance.ServerFile
     if (-not $info) { Say "  Stopped $($r.Instance.Name)."; return $true }
-    Say "  $($r.Instance.Name) didn't stop within 30 seconds." Yellow
+    Say "  $($r.Instance.Name) $(if ($r.NotAnswering) { "isn't answering" } else { "didn't stop within 30 seconds" })." Yellow
     if (-not (Confirm-CWeb "  Force-stop the $($r.Instance.Name) server (process $($info.pid))? Its Chrome window is closed first, cleanly.")) { return $false }
     # Chrome first, the way its own Exit does (session saved, no "didn't shut down correctly" on the next start).
-    . (Join-Path $root 'browser\Browser-Functions.ps1')
-    if (-not (Close-ChromeProfile -UserDataPath $r.Instance.ProfileDir -TimeoutSeconds 30)) {
-        Say "  Chrome didn't close; it is ended with the server (it will offer to restore its tabs)." Yellow
-        Close-ChromeProfile -UserDataPath $r.Instance.ProfileDir -TimeoutSeconds 1 -Force | Out-Null
-    }
-    $drivers = @(Get-CimInstance Win32_Process -Filter "Name='chromedriver.exe' AND ParentProcessId=$([int]$info.pid)" -ErrorAction SilentlyContinue)
-    Stop-Process -Id ([int]$info.pid) -Force
-    $drivers | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }   # Chrome is closed; its driver would linger
-    Start-Sleep -Seconds 2
+    Stop-CWebServerProcess -Instance $r.Instance -Root $root | Out-Null
     Say "  Force-stopped $($r.Instance.Name)."
     return $true
 }
@@ -115,7 +114,7 @@ Step 'Running instances'
 $running = @(Get-RunningInstances)
 if ($running.Count) {
     foreach ($r in $running) {
-        $who = if ($r.Agents.Count) { "agents in tabs: $($r.Agents -join ', ')" } else { 'no agent in a tab' }
+        $who = if ($r.NotAnswering) { 'not answering' } elseif ($r.Agents.Count) { "agents in tabs: $($r.Agents -join ', ')" } else { 'no agent in a tab' }
         Say ("  {0,-10} port {1}  {2} tab(s), {3}" -f $r.Instance.Name, $r.Port, $r.Tabs, $who)
     }
     Say '  Stopping closes their Chrome windows: agents working in them are interrupted, and anything typed into an'
