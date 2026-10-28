@@ -1080,6 +1080,7 @@ try {
             if (-not $request.IsLocal -or $request.Headers['Origin'] -or $request.Headers['X-CWeb-Attach'] -ne '1') {
                 Send-Response -Response $response -Data @{ success = $false; error = 'Forbidden' } -StatusCode 403
             } elseif ($request.HttpMethod -eq 'POST') {
+                Write-Host "[$(Get-Date -Format HH:mm:ss)] old-style attach from a client of an earlier CWeb: handed this machine's key" -ForegroundColor DarkCyan
                 Send-Response -Response $response -Data @{ success = $true; ticket = 'auto'; status = 'pending' }
             } else {
                 Send-Response -Response $response -Data @{ success = $true; status = 'approved'; key = $script:ApiKey }
@@ -1099,6 +1100,7 @@ try {
             continue
         }
         if (-not (Test-ApiKey -Request $request)) {
+            Write-Host "[$(Get-Date -Format HH:mm:ss)] refused: an /api request without this machine's key$(if ($request.Headers['Origin']) { " (from a web page: $($request.Headers['Origin']))" })" -ForegroundColor DarkYellow
             Send-Response -Response $response -Data @{ success = $false; error = "Unauthorized: send the key from $(Get-CWebKeyFile) (cweb.sh and CWeb-Client.ps1 do)." } -StatusCode 401
             continue
         }
