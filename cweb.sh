@@ -1,37 +1,41 @@
 #!/usr/bin/env bash
 # cweb.sh -- CWeb from Bash (Git Bash). Agents use this instead of raw curl.
 #
-#   cweb.sh <client> connect                     # once per session; safe to repeat. Attaches to the running instance
-#                                                # (none running: starts work) and replies with its name
-#                                                # ("instance"); use that name below.
-#   cweb.sh <instance> <client> connect          # attach to that instance (if it's running)
-#   cweb.sh <instance> <client> '<json>'         # one API command, e.g. '{"action":"navigate","url":"https://example.org"}'
-#   cweb.sh <instance> <client> - < body.json    # body from stdin (long scripts)
+#   cweb.sh '<json>'                  # one command in the work instance, e.g. '{"action":"navigate","tab":"tickets","url":"https://example.org"}'
+#   cweb.sh - < body.json             # body from stdin (long scripts)
+#   cweb.sh <instance> '<json>'|-     # another instance (personal), only when the user says so
 #
-# When no instance runs at all, connect starts 'work' (the default). It never creates an instance, and never starts one
-# while another runs: if the named one isn't running but another is, ask the user.
-# Prints the server's JSON reply. Exit codes: 0 ok, 3 still waiting (for approval, or for Chrome to open), 4 denied,
-# 5 not connected / key revoked (run connect), 6 several instances running (ask the user which), 1 other error.
-# The key is read from <data folder>\<instance>\clients\<client>.key (data folder: CWEB_DATA, else
-# %USERPROFILE%\CWebData) and passed to curl on stdin,
-# so it never appears on a command line or in output.
+# If CWeb isn't running, this starts it first (Chrome opens with its tabs and sign-ins) and then runs the command.
+# Nothing to connect or approve: the key is read from <data folder>\cweb.key (only this Windows user can read it) and
+# passed to curl on stdin, so it never appears on a command line or in output.
+# Old forms still work: cweb.sh <client> connect, cweb.sh <instance> <client> connect|'<json>'|-.
+# Prints the server's JSON reply. Exit codes: 0 ok (check "success"), 3 CWeb is still starting (run it again), 1 error.
 
 set -u
 dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 fail() { printf '{"success":false,"error":"%s"}\n' "$2"; exit "$1"; }
 
-if [ $# -eq 2 ] && [ "$2" = "connect" ]; then
-    [[ "$1" =~ ^[a-z0-9][a-z0-9-]{0,39}$ ]] || fail 1 "Bad client name: $1 (lowercase letters, digits, hyphens)"
-    exec pwsh -NoProfile -ExecutionPolicy Bypass -File "$dir/CWeb-Client.ps1" -Connect -Client "$1"
-fi
-[ $# -eq 3 ] || fail 1 "Usage: cweb.sh <client> connect | cweb.sh <instance> <client> connect|'<json>'|-"
-inst="$1"; client="$2"; what="$3"
+inst="work"; client=""; what=""
+case $# in
+    1) what="$1" ;;
+    2) if [ "$2" = "connect" ]; then client="$1"; what="connect"; else inst="$1"; what="$2"; fi ;;
+    3) inst="$1"; client="$2"; what="$3" ;;
+    *) fail 1 "Usage: cweb.sh '<json>' | cweb.sh - < body.json | cweb.sh <instance> '<json>'" ;;
+esac
 [[ "$inst" =~ ^[a-z0-9-]{1,30}$ ]] || fail 1 "Bad instance name: $inst"
-[[ "$client" =~ ^[a-z0-9][a-z0-9-]{0,39}$ ]] || fail 1 "Bad client name: $client (lowercase letters, digits, hyphens)"
+[[ -z "$client" || "$client" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$ ]] || client=""
+
+ensure() {
+    # Starts the instance if it isn't running; prints its JSON status. Exit 0 running, 3 starting, 1 error.
+    pwsh -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$dir/CWeb-Client.ps1")" -Ensure -Instance "$inst" | tail -n 1
+    return "${PIPESTATUS[0]}"
+}
 
 if [ "$what" = "connect" ]; then
-    exec pwsh -NoProfile -ExecutionPolicy Bypass -File "$dir/CWeb-Client.ps1" -Connect -Instance "$inst" -Client "$client"
+    out="$(ensure)"; rc=$?
+    printf '%s\n' "$(printf '%s' "$out" | sed 's/"status":"running"/"status":"connected"/')"
+    exit "$rc"
 fi
 
 # Data folder: the user variable CWEB_DATA (read from the registry, so a change applies at once), else
@@ -44,35 +48,45 @@ if [ -z "$root" ]; then
     [ ! -d "$(cygpath -u "$root")" ] && [ -d "$(cygpath -u "$LOCALAPPDATA\\CWeb")" ] && root="$LOCALAPPDATA\\CWeb"
 fi
 root="$(cygpath -u "$root")"; root="${root%/}"
-
 data="$root/$inst"
+keyfile="$root/cweb.key"
 
 # Port (no jq here): where the server says it listens (server.json; it may have moved off a taken port), else the
 # "port" inside this instance's {...}: config.json's overrides, this machine's list, then the repo's defaults.
 port_in() { [ -f "$1" ] && tr -d '\r\n' < "$1" | grep -o "\"$inst\"[[:space:]]*:[[:space:]]*{[^}]*}" | grep -o '"port"[[:space:]]*:[[:space:]]*[0-9]*' | grep -o '[0-9]*$'; }
-port=""
-[ -f "$data/server.json" ] && port="$(tr -d '\r\n' < "$data/server.json" | grep -o '"port"[[:space:]]*:[[:space:]]*[0-9]*' | grep -o '[0-9]*$')"
-[ -n "$port" ] || port="$(port_in "$root/config.json")"
-[ -n "$port" ] || port="$(port_in "$root/instances.json")"
-[ -n "$port" ] || port="$(port_in "$dir/instances.json")"
-[ -n "$port" ] || fail 1 "No instance '$inst'"
-
-keyfile="$data/clients/$client.key"
-[ -f "$keyfile" ] || fail 5 "Not connected as $client. Run: cweb.sh $inst $client connect"
+find_port() {
+    port=""
+    [ -f "$data/server.json" ] && port="$(tr -d '\r\n' < "$data/server.json" | grep -o '"port"[[:space:]]*:[[:space:]]*[0-9]*' | grep -o '[0-9]*$')"
+    [ -n "$port" ] || port="$(port_in "$root/config.json")"
+    [ -n "$port" ] || port="$(port_in "$root/instances.json")"
+    [ -n "$port" ] || port="$(port_in "$dir/instances.json")"
+    [ -n "$port" ] || fail 1 "No instance '$inst'"
+}
 
 # Body goes through a temp file: no command-line length limit, and quotes survive.
 body="$(mktemp)"
 trap 'rm -f "$body"' EXIT
 if [ "$what" = "-" ]; then cat > "$body"; else printf '%s' "$what" > "$body"; fi
 
-out="$(printf 'X-API-Key: %s\r\n' "$(tr -d '\r\n' < "$keyfile")" |
-    curl -s -m 330 -w '\n%{http_code}' -H @- -H 'Content-Type: application/json' --data-binary "@$(cygpath -w "$body")" "http://127.0.0.1:$port/api")"
-code="${out##*$'\n'}"
-reply="${out%$'\n'*}"
+send() {
+    out="$( { printf 'X-CWeb-Key: %s\r\n' "$(tr -d '\r\n' < "$keyfile" 2>/dev/null)"; [ -n "$client" ] && printf 'X-CWeb-Client: %s\r\n' "$client"; } |
+        curl -s -m 330 -w '\n%{http_code}' -H @- -H 'Content-Type: application/json' --data-binary "@$(cygpath -w "$body")" "http://127.0.0.1:$port/api")"
+    code="${out##*$'\n'}"
+    reply="${out%$'\n'*}"
+}
+
+find_port
+if [ -f "$keyfile" ]; then send; else code="000"; fi
+if [ "$code" = "000" ]; then
+    # Not running (or not answering yet): start it, then try once more.
+    st="$(ensure)"; rc=$?
+    [ "$rc" -eq 0 ] || { printf '%s\n' "$st"; exit "$rc"; }
+    find_port
+    send
+fi
 
 case "$code" in
     200) printf '%s\n' "$reply"; exit 0 ;;
-    401) fail 5 "Key for $client was revoked or replaced. Run: cweb.sh $inst $client connect" ;;
-    000) fail 1 "CWeb '$inst' isn't answering on port $port (stopped?). Run: cweb.sh $client connect (it starts work if no instance runs)" ;;
+    000) fail 1 "CWeb '$inst' isn't answering on port $port. See its status page: http://127.0.0.1:$port/status" ;;
     *)   printf '%s\n' "$reply"; exit 1 ;;
 esac

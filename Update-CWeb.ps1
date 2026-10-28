@@ -42,11 +42,10 @@ function Get-RunningInstances {
         $st = Get-CWebRunningServer -Instance $i
         if (-not $st) {
             $info = Get-CWebServerInfo -ServerFile $i.ServerFile
-            if ($info) { [pscustomobject]@{ Instance = $i; Port = [int]$info.port; Tabs = '?'; Agents = @(); NotAnswering = $true } }
+            if ($info) { [pscustomobject]@{ Instance = $i; Port = [int]$info.port; Tabs = '?'; NotAnswering = $true } }
             continue
         }
-        $agents = @($st.tabUse.PSObject.Properties | ForEach-Object { $_.Value.owner; $_.Value.users } | Where-Object { $_ } | Sort-Object -Unique)
-        [pscustomobject]@{ Instance = $i; Port = [int]$st.server.port; Tabs = [int]$st.browser.tabCount; Agents = $agents; NotAnswering = $false }
+        [pscustomobject]@{ Instance = $i; Port = [int]$st.server.port; Tabs = [int]$st.browser.tabCount; NotAnswering = $false }
     }
 }
 
@@ -114,8 +113,7 @@ Step 'Running instances'
 $running = @(Get-RunningInstances)
 if ($running.Count) {
     foreach ($r in $running) {
-        $who = if ($r.NotAnswering) { 'not answering' } elseif ($r.Agents.Count) { "agents in tabs: $($r.Agents -join ', ')" } else { 'no agent in a tab' }
-        Say ("  {0,-10} port {1}  {2} tab(s), {3}" -f $r.Instance.Name, $r.Port, $r.Tabs, $who)
+        Say ("  {0,-10} port {1}  {2} tab(s){3}" -f $r.Instance.Name, $r.Port, $r.Tabs, $(if ($r.NotAnswering) { ', not answering' }))
     }
     Say '  Stopping closes their Chrome windows: agents working in them are interrupted, and anything typed into an'
     Say '  unsent form is lost. Sign-ins are kept. They start again after the update.'

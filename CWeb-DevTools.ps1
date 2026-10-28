@@ -21,17 +21,43 @@ function Get-DevToolsTabs {
     return $tabs
 }
 
+function New-DevToolsTab {
+    # Opens a tab in the background (the user's tab stays in front) and returns its id (= window handle).
+    param([string]$Url)
+    $ver = Invoke-RestMethod "http://$(Get-DevToolsAddress)/json/version" -TimeoutSec 5
+    $r = Invoke-DevToolsCall -WsUrl $ver.webSocketDebuggerUrl -Method 'Target.createTarget' -Params @{ url = $Url; background = $true }
+    return [string]$r.targetId
+}
+
+function Close-DevToolsTab {
+    param([string]$TabId)
+    try { Invoke-RestMethod "http://$(Get-DevToolsAddress)/json/close/$TabId" -TimeoutSec 5 | Out-Null } catch { }
+}
+
 function Invoke-DevToolsScript {
     # Runs an expression in the tab's top-level page and returns its value (promises are awaited). A script that throws
     # throws here, with the page's message.
     param([string]$TabId, [string]$Expression, [int]$TimeoutSeconds = 20)
     $tab = (Get-DevToolsTabs)[$TabId]
     if (-not $tab -or -not $tab.webSocketDebuggerUrl) { throw 'That tab is not open.' }
+    $res = Invoke-DevToolsCall -WsUrl $tab.webSocketDebuggerUrl -Method 'Runtime.evaluate' -TimeoutSeconds $TimeoutSeconds `
+        -Params @{ expression = $Expression; returnByValue = $true; awaitPromise = $true }
+    if ($res.exceptionDetails) {
+        $e = $res.exceptionDetails
+        $why = if ($e.exception.description) { ($e.exception.description -split "`n")[0] } else { $e.text }
+        throw $why
+    }
+    return $res.result.value
+}
+
+function Invoke-DevToolsCall {
+    # One DevTools command over a tab's (or the browser's) WebSocket; returns its result.
+    param([string]$WsUrl, [string]$Method, [hashtable]$Params = @{}, [int]$TimeoutSeconds = 20)
     $ws = [System.Net.WebSockets.ClientWebSocket]::new()
     $cts = [System.Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds($TimeoutSeconds))
     try {
-        [void]$ws.ConnectAsync([Uri]$tab.webSocketDebuggerUrl, $cts.Token).GetAwaiter().GetResult()
-        $msg = @{ id = 1; method = 'Runtime.evaluate'; params = @{ expression = $Expression; returnByValue = $true; awaitPromise = $true } } | ConvertTo-Json -Depth 4 -Compress
+        [void]$ws.ConnectAsync([Uri]$WsUrl, $cts.Token).GetAwaiter().GetResult()
+        $msg = @{ id = 1; method = $Method; params = $Params } | ConvertTo-Json -Depth 6 -Compress
         $out = [Text.Encoding]::UTF8.GetBytes($msg)
         [void]$ws.SendAsync([ArraySegment[byte]]::new($out), [System.Net.WebSockets.WebSocketMessageType]::Text, $true, $cts.Token).GetAwaiter().GetResult()
         $buf = [byte[]]::new(65536)
@@ -47,14 +73,9 @@ function Invoke-DevToolsScript {
             if ($reply.id -eq 1) { break }
         }
         if ($reply.error) { throw "DevTools: $($reply.error.message)" }
-        if ($reply.result.exceptionDetails) {
-            $e = $reply.result.exceptionDetails
-            $why = if ($e.exception.description) { ($e.exception.description -split "`n")[0] } else { $e.text }
-            throw $why
-        }
-        return $reply.result.result.value
+        return $reply.result
     } catch [OperationCanceledException] {
-        throw "The script did not finish within ${TimeoutSeconds}s."
+        throw "DevTools $Method did not finish within ${TimeoutSeconds}s."
     } finally {
         if ($ws.State -eq [System.Net.WebSockets.WebSocketState]::Open) {
             try { $ws.CloseAsync([System.Net.WebSockets.WebSocketCloseStatus]::NormalClosure, '', [Threading.CancellationToken]::None).Wait(2000) | Out-Null } catch { }

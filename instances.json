@@ -1,5 +1,4 @@
 {
   "work":     { "port": 9380, "label": "Work" },
-  "personal": { "port": 9390, "label": "Personal" },
-  "test":     { "port": 9399, "label": "Test", "hidden": true }
+  "personal": { "port": 9390, "label": "Personal" }
 }

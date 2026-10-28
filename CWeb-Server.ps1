@@ -75,7 +75,6 @@ if (-not (Test-Path $chromeFunctionsPath)) {
 
 # Load Chrome functions from the core module
 . $chromeFunctionsPath
-. (Join-Path $PSScriptRoot 'CWeb-Profiles.ps1')   # leftover profiles
 
 # Settings come from the instance (instances.json, config.json). The server only ever listens on this machine.
 # $script:Port is final once the listener opens (Open-CWebListener): it may move off a port another program holds.
@@ -83,32 +82,30 @@ $script:Port = $script:Inst.ConfiguredPort
 $script:ListenAddress = '127.0.0.1'
 $script:ProfileDir = $script:Inst.ProfileDir
 
-# Who may use the API: clients approved on the status page, each with its own key (see CWeb-Access.ps1).
-. (Join-Path $PSScriptRoot 'CWeb-Access.ps1')
-Initialize-CWebAccess -DataDir $script:Inst.DataDir
-$script:Caller = $null   # the approved client making the current /api request
+# Who may use the API: programs of this Windows user. They send the key from <data folder>\cweb.key, a file only this
+# user can read (cweb.sh and CWeb-Client.ps1 do it for them). Web pages can't send it: a custom header needs a CORS
+# preflight, which this server never approves.
+$script:ApiKey = Initialize-CWebKey
 
 # Browser state
 $script:Browser = $null
 $script:BrowserStartError = $null   # why the automatic start at launch failed, for the status page
-$script:BrowserClosed = $null       # when Chrome was closed under the server (window closed, or it exited), for the status page
+$script:BrowserClosed = $null       # when Chrome was last found closed or not answering (it's reopened at once), for the status page
+$script:LastStartAttempt = [datetime]::MinValue
 $script:StopRequested = $false   # set by the status page's Stop server button
 
-# Session keep-alive (profiles in <data folder>\keepalive\; see claude.md). Runs between API requests, so it never
-# interleaves with a caller's commands. Per-tab state is keyed by window handle.
+# Keep-alive (CWeb-KeepAlive.ps1): each flagged site in its own background tab, checked between API requests.
 $script:KeepAlive = @{
     Enabled         = $script:Inst.KeepAliveEnabled
     TickSeconds     = $script:Inst.KeepAliveTick
     MaxCheckSeconds = $script:Inst.KeepAliveMax
-    SiteDir         = Join-Path $script:Inst.DataRoot 'keepalive'   # this machine's site profiles (none ship with CWeb)
-    Tabs            = @{}
+    SiteDir         = Join-Path $script:Inst.DataRoot 'keepalive'   # this machine's site profiles (never in git)
+    Sites           = @{}   # site id -> its tab and last check
     LastTick        = [datetime]::MinValue
     Events          = [System.Collections.Generic.List[object]]::new()   # recent renewals/warnings, for /status
 }
-# Per-site on/off, keep-alive requests and agent drafts (see CWeb-KeepAliveAdmin.ps1).
-. (Join-Path $PSScriptRoot 'CWeb-KeepAliveAdmin.ps1')
 . (Join-Path $PSScriptRoot 'CWeb-DevTools.ps1')   # reads and runs scripts in tabs without switching to them
-Initialize-KeepAliveAdmin -DataDir $script:Inst.DataDir
+. (Join-Path $PSScriptRoot 'CWeb-KeepAlive.ps1')
 
 # Request stats for the /status page. Recent commands record the action and its target only,
 # never typed text, scripts or cookie values.
@@ -167,20 +164,35 @@ function Start-InstanceBrowser {
 }
 
 function Test-InstanceBrowser {
-    # Chrome can close under the server: the user closes its window, or it crashes. The driver then reports no tabs at
-    # all (WindowHandles is null) instead of failing. Once no Chrome process is left on the profile either, this
-    # drops the dead driver and records the time, so the status page keeps working and says so, and Start-CWeb or
-    # the status page's Open Chrome brings it back. Called before each request and keep-alive pass (one driver call).
-    if (-not $script:Browser) { return }
-    try { $open = @(@($script:Browser.Driver.WindowHandles) | Where-Object { $_ }).Count } catch { $open = 0 }
-    if ($open -or @(Get-ChromeProfileProcess -UserDataPath $script:Browser.UserDataPath).Count) { return }
-    Write-Host "[$(Get-Date -Format HH:mm:ss)] Chrome was closed (its window was closed, or it exited). Start-CWeb or the status page's Open Chrome opens it again." -ForegroundColor Yellow
-    try { $script:Browser.Driver.Quit() } catch { }
-    try { $script:Browser.Service.Dispose() } catch { }
-    $script:Browser = $null
-    $script:BrowserClosed = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-    $script:KeepAlive.Tabs.Clear()
-    Reset-ClientState
+    # True if Chrome is open and ChromeDriver answers. Chrome can close under the server (its window closed, a crash),
+    # and ChromeDriver can lose it; the driver then reports no tabs (WindowHandles is null) or a dead session. Any other
+    # error (an alert is open, say) still counts as alive. One driver call.
+    if (-not $script:Browser) { return $false }
+    try { return [bool]@(@($script:Browser.Driver.WindowHandles) | Where-Object { $_ }).Count }
+    catch { return $_.Exception.Message -notmatch 'invalid session|not reachable|disconnected|refused|session deleted|No connection could be made|timed out' }
+}
+
+function Confirm-InstanceBrowser {
+    # Makes sure Chrome is open and answering before it's used: if it was closed, crashed or lost its ChromeDriver, the
+    # leftovers are closed cleanly and Chrome opens again with its tabs and sign-ins. True when Chrome is ready.
+    if (Test-InstanceBrowser) { return $true }
+    if ($script:Browser) {
+        Write-Host "[$(Get-Date -Format HH:mm:ss)] Chrome was closed or stopped answering; opening it again." -ForegroundColor Yellow
+        $script:BrowserClosed = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+        try { $script:Browser.Driver.Quit() } catch { }
+        try { $script:Browser.Service.Dispose() } catch { }
+        $script:Browser = $null
+    }
+    if (@(Get-ChromeProfileProcess -UserDataPath $script:ProfileDir).Count) {
+        # A Chrome still open on the profile without a driver: close it the way its own Exit does, so nothing is lost.
+        if (-not (Close-ChromeProfile -UserDataPath $script:ProfileDir -TimeoutSeconds 20)) { Close-ChromeProfile -UserDataPath $script:ProfileDir -TimeoutSeconds 1 -Force | Out-Null }
+    }
+    Reset-TabState
+    # A start that just failed isn't retried for a minute (each try can take minutes).
+    if ($script:BrowserStartError -and ((Get-Date) - $script:LastStartAttempt).TotalSeconds -lt 60) { return $false }
+    $script:LastStartAttempt = Get-Date
+    $r = Start-InstanceBrowser -Hidden $script:Inst.Hidden -Persist $true
+    return [bool]$r.success
 }
 
 function Invoke-BrowserAction {
@@ -292,10 +304,12 @@ function Invoke-BrowserAction {
 
             "listtabs" {
                 if (-not $script:Browser) { return @{ success = $false; error = "No browser running" } }
-                # Name any tab the user opened since the last check, so it's in the list now.
-                try { Invoke-KeepAliveTick } catch { }
-                $tabs = Chrome-ListTabs -Browser $script:Browser
-                return @{ success = $true; tabs = @($tabs) }
+                # Every tab, by name (tabs opened by hand are named after their site), without switching to any.
+                $pages = Update-TabNames
+                $details = @($script:Browser.Tabs.GetEnumerator() | Where-Object { $pages.ContainsKey($_.Value) } | Sort-Object Name | ForEach-Object {
+                    [ordered]@{ name = $_.Name; title = [string]$pages[$_.Value].title; url = [string]$pages[$_.Value].url; keepAlive = $_.Name.StartsWith('keepalive-') }
+                })
+                return @{ success = $true; tabs = @($details | ForEach-Object { $_.name }); details = $details }
             }
 
             "findelement" {
@@ -558,30 +572,13 @@ function Invoke-BrowserAction {
             "keepalive" {
                 $op = if ($Body.op) { $Body.op.ToLower() } else { "status" }
                 switch ($op) {
-                    "on"     { $script:KeepAlive.Enabled = $true }
-                    "off"    { $script:KeepAlive.Enabled = $false }
-                    "check"  {
-                        # Check every tab now, regardless of schedule.
-                        foreach ($t in $script:KeepAlive.Tabs.Values) { $t.NextCheck = [datetime]::MinValue }
-                        Invoke-KeepAliveTick -Force
-                    }
+                    { $_ -in 'add', 'install' } { return Add-KeepAliveSite -Source ([string]$Body.source) }   # install: the old name
+                    "remove" { return Remove-KeepAliveSite -Id ([string]$Body.site) }
+                    "check"  { Invoke-KeepAliveTick -Force }
                     "status" { }
-                    # The request queue (see CWeb-KeepAliveAdmin.ps1 and KEEPALIVE.md).
-                    "requests" {
-                        return @{ success = $true; requests = @($script:KaAdmin.Requests | Where-Object state -eq 'open'); all = @($script:KaAdmin.Requests); howTo = 'KEEPALIVE.md' }
-                    }
-                    "drafts" {
-                        return @{ success = $true; drafts = @(Get-KeepAliveDrafts | ForEach-Object { $_.Remove('source'); $_ }) }
-                    }
-                    { $_ -in 'install', 'draft' } {   # draft: the old name, now installs too
-                        return Install-KeepAliveProfile -Name ([string]$Body.name) -Source ([string]$Body.source) -RequestId ([string]$Body.request) -Client $script:Caller
-                    }
-                    "decline" {
-                        return Set-KeepAliveRequestDeclined -RequestId ([string]$Body.request) -Note ([string]$Body.note) -Client $script:Caller
-                    }
-                    default  { return @{ success = $false; error = "Unknown keepalive op '$op' (status|on|off|check|requests|install|decline)" } }
+                    default  { return @{ success = $false; error = "Unknown keepalive op '$op' (status|add|remove|check)" } }
                 }
-                return @{ success = $true; enabled = $script:KeepAlive.Enabled; sites = @(Get-KeepAliveSites | ForEach-Object { $_.Name }); tabs = @(Get-KeepAliveStatus) }
+                return @{ success = $true; sites = @(Get-KeepAliveStatus | ForEach-Object { $_.Remove('source'); $_ }) }
             }
 
             default {
@@ -593,20 +590,16 @@ function Invoke-BrowserAction {
     }
 }
 
-# ---- Clients sharing one browser ----
-# WebDriver has one "current tab" for everyone, so each client's own position is kept here and restored before each of
-# its commands: its tab (the one it named with `tab`, else the one it used last) and the iframe it was in on that tab.
-# A tab opened with `newtab` is owned by the client that opened it: others may read it, not change it.
-$script:ClientCtx = @{}      # client -> @{ Handle = <window handle>; Frames = @{ <handle> = [list of frame specs] } }
-$script:TabOwners = @{}      # window handle -> owning client
-$script:DriverCtx = @{ Handle = $null; Client = $null; Stamp = -1 }   # where the driver was last put for a client
-$script:SwitchStamp = 0      # bumped by anything else that moves the driver (keep-alive, status page), forcing a re-switch
+# ---- Tabs ----
+# Every command runs in one tab: the one named by `tab` (navigate or newtab with a new name opens it), else the current
+# tab (the one switchtab chose, or the last one used). The iframe a command switched into is remembered per tab and
+# restored the next time that tab is used. Tabs CWeb opens for keep-alive (keepalive-<site>) run in the background.
+$script:Frames = @{}         # window handle -> [list of frame specs]
+$script:DriverAt = @{ Handle = $null; Stamp = -1 }   # where the driver was last put
+$script:SwitchStamp = 0      # bumped by anything else that moves the driver (status page), forcing a re-switch
 
-$script:NoTabActions = @('start', 'stop', 'listtabs', 'keepalive', 'newtab', 'releasetab', 'switchtab')
-# Actions that change a page or a tab. On a tab owned by another client they're refused.
-$script:WriteActions = @('navigate', 'back', 'forward', 'refresh', 'click', 'sendkeys', 'selectoption', 'hover', 'scroll',
-    'executescript', 'acceptalert', 'dismissalert', 'setcookie', 'deletecookie', 'closetab')
-# Actions after which the page is new, so every client's iframe position on that tab is gone.
+$script:NoTabActions = @('start', 'stop', 'listtabs', 'keepalive', 'newtab', 'switchtab', 'status')
+# Actions after which the page is new, so the iframe position on that tab is gone.
 $script:NewPageActions = @('navigate', 'back', 'forward', 'refresh')
 
 function Get-TabName {
@@ -615,28 +608,17 @@ function Get-TabName {
     return ($script:Browser.Tabs.GetEnumerator() | Where-Object { $_.Value -eq $Handle } | Select-Object -First 1).Name
 }
 
-function Reset-ClientState {
-    # The browser started or stopped: every handle is gone.
-    $script:ClientCtx = @{}; $script:TabOwners = @{}
-    $script:DriverCtx = @{ Handle = $null; Client = $null; Stamp = -1 }
+function Get-TabLabel {
+    param([string]$Handle)
+    $name = Get-TabName $Handle
+    if ($name) { "tab '$name'" } else { "tab $($Handle.Substring(0, [math]::Min(8, $Handle.Length)))" }
 }
 
-function Get-DefaultTab {
-    # A client's first tab when it hasn't picked one: the tab in front unless another client owns it,
-    # else the first shared tab, else the tab in front.
-    param([string]$Client)
-    $d = $script:Browser.Driver
-    $front = $d.CurrentWindowHandle
-    $o = $script:TabOwners[$front]
-    if (-not $o -or $o -eq $Client) { return $front }
-    $shared = @($d.WindowHandles) | Where-Object { -not $script:TabOwners[$_] } | Select-Object -First 1
-    if ($shared) { return $shared } else { return $front }
-}
-
-function Get-ClientCtx {
-    param([string]$Client)
-    if (-not $script:ClientCtx.ContainsKey($Client)) { $script:ClientCtx[$Client] = @{ Handle = $null; Frames = @{} } }
-    return $script:ClientCtx[$Client]
+function Reset-TabState {
+    # Chrome started or stopped: every handle is gone.
+    $script:Frames = @{}
+    $script:DriverAt = @{ Handle = $null; Stamp = -1 }
+    foreach ($s in $script:KeepAlive.Sites.Values) { $s.Tab = $null; $s.NextCheck = [datetime]::MinValue }
 }
 
 function Get-TabHandleByName {
@@ -645,176 +627,6 @@ function Get-TabHandleByName {
     $h = $script:Browser.Tabs[$Name]
     if ($h -notin @($script:Browser.Driver.WindowHandles)) { $script:Browser.Tabs.Remove($Name); return $null }
     return $h
-}
-
-function Remove-TabState {
-    # Forget owners and frame positions for a tab that's gone. A client whose tab it was keeps pointing at it, so its
-    # next command is told "your tab was closed" instead of quietly running somewhere else.
-    param([string]$Handle)
-    $script:TabOwners.Remove($Handle)
-    foreach ($c in $script:ClientCtx.Values) { $c.Frames.Remove($Handle) }
-}
-
-function Enter-ClientTab {
-    # Puts the driver on the client's tab and back into its iframe, unless it's already there for this client.
-    param([string]$Client, [string]$Handle)
-    $d = $script:Browser.Driver
-    $ctx = Get-ClientCtx $Client
-    $dc = $script:DriverCtx
-    if ($dc.Handle -eq $Handle -and $dc.Client -eq $Client -and $dc.Stamp -eq $script:SwitchStamp) { return }
-    $d.SwitchTo().Window($Handle) | Out-Null   # also leaves any iframe: top-level document of that tab
-    foreach ($f in @($ctx.Frames[$Handle])) {
-        if (-not $f) { continue }
-        try {
-            if ($f.ContainsKey('frameId')) { Chrome-SwitchToFrame -Browser $script:Browser -FrameId $f.frameId }
-            elseif ($f.ContainsKey('frameName')) { Chrome-SwitchToFrame -Browser $script:Browser -FrameName $f.frameName }
-            else { Chrome-SwitchToFrame -Browser $script:Browser -FrameIndex $f.frameIndex }
-        } catch {
-            # The frame isn't there any more (the page changed): stay on the top-level page.
-            $ctx.Frames.Remove($Handle); $d.SwitchTo().Window($Handle) | Out-Null; break
-        }
-    }
-    $script:DriverCtx = @{ Handle = $Handle; Client = $Client; Stamp = $script:SwitchStamp }
-}
-
-function Invoke-ClientAction {
-    # Runs one /api command for a client in that client's own tab and frame. See the comment above $script:ClientCtx.
-    param([hashtable]$Body, [string]$Client)
-    $action = ([string]$Body.action).ToLower()
-    if ($action -in 'start', 'stop') {
-        $r = Invoke-BrowserAction -Body $Body
-        if ($r.success) { Reset-ClientState }
-        return $r
-    }
-    if (-not $script:Browser -or -not $action) { return Invoke-BrowserAction -Body $Body }
-    $ctx = Get-ClientCtx $Client
-    $d = $script:Browser.Driver
-
-    try {
-        switch ($action) {
-            'switchtab' {
-                if (-not $Body.name) { return @{ success = $false; error = "Missing 'name' parameter" } }
-                $h = Get-TabHandleByName $Body.name
-                if (-not $h) { return @{ success = $false; error = "No tab named '$($Body.name)'. Run listtabs." } }
-                $ctx.Handle = $h
-                Enter-ClientTab -Client $Client -Handle $h
-                return @{ success = $true; tab = $Body.name; owner = $script:TabOwners[$h] }
-            }
-            'newtab' {
-                $r = Invoke-BrowserAction -Body $Body
-                if ($r.success) {
-                    $h = $d.CurrentWindowHandle
-                    if (-not $Body.name) { Register-UnnamedTab -Handle $h -Url $d.Url }   # unnamed: named after its site
-                    $script:TabOwners[$h] = $Client
-                    $ctx.Handle = $h
-                    $script:DriverCtx = @{ Handle = $h; Client = $Client; Stamp = $script:SwitchStamp }
-                    $r.tab = Get-TabName $h; $r.owner = $Client
-                }
-                return $r
-            }
-            'releasetab' {
-                $h = if ($Body.tab) { Get-TabHandleByName $Body.tab } else { $ctx.Handle }
-                if (-not $h) { return @{ success = $false; error = "No such tab. Pass 'tab' or switchtab first." } }
-                if ($script:TabOwners[$h] -ne $Client) { return @{ success = $false; error = "Tab '$(Get-TabName $h)' isn't yours to release." } }
-                $script:TabOwners.Remove($h)
-                return @{ success = $true; tab = (Get-TabName $h); owner = $null }
-            }
-            'listtabs' {
-                $r = Invoke-BrowserAction -Body $Body
-                if ($r.success) {
-                    $r.details = @($script:Browser.Tabs.GetEnumerator() | Sort-Object Name | ForEach-Object {
-                        $ka = $script:KeepAlive.Tabs[$_.Value]
-                        [ordered]@{ name = $_.Name; owner = $script:TabOwners[$_.Value]; mine = ($_.Value -eq $ctx.Handle); url = $(if ($ka) { $ka.Url }) }
-                    })
-                }
-                return $r
-            }
-        }
-        if ($action -in $script:NoTabActions) { return Invoke-BrowserAction -Body $Body }
-
-        # Which tab: the one named in the request (for this request only; switchtab changes the client's own tab),
-        # else the client's own, else (its first request) a default that it then keeps.
-        $handles = @($d.WindowHandles)
-        if ($Body.tab) {
-            $h = Get-TabHandleByName $Body.tab
-            if (-not $h) { return @{ success = $false; error = "No tab named '$($Body.tab)'. Run listtabs." } }
-        } elseif ($ctx.Handle) {
-            $h = $ctx.Handle
-            if ($h -notin $handles) {
-                Remove-TabState $h
-                return @{ success = $false; error = 'Your tab was closed. Run listtabs, then switchtab, or pass tab.' }
-            }
-        } else {
-            $h = Get-DefaultTab -Client $Client
-            $ctx.Handle = $h
-        }
-
-        $owner = $script:TabOwners[$h]
-        if ($owner -and $owner -ne $Client -and $action -in $script:WriteActions) {
-            return @{ success = $false; error = "Tab '$(Get-TabName $h)' belongs to $owner, so you can read it but not $action in it. Open your own with newtab." }
-        }
-
-        Enter-ClientTab -Client $Client -Handle $h
-        $r = Invoke-BrowserAction -Body $Body
-
-        # Keep the client's position up to date.
-        if ($r.success) {
-            if ($action -eq 'switchtoframe') {
-                if ($Body.default) { $ctx.Frames.Remove($h) }
-                else {
-                    $spec = if ($Body.frameId) { @{ frameId = $Body.frameId } } elseif ($Body.frameName) { @{ frameName = $Body.frameName } } else { @{ frameIndex = [int]$Body.frameIndex } }
-                    if (-not $ctx.Frames.ContainsKey($h)) { $ctx.Frames[$h] = [System.Collections.Generic.List[object]]::new() }
-                    $ctx.Frames[$h].Add($spec)
-                }
-            } elseif ($action -in $script:NewPageActions) {
-                foreach ($c in $script:ClientCtx.Values) { $c.Frames.Remove($h) }
-            } elseif ($action -eq 'closetab') {
-                Remove-TabState $h
-                $script:SwitchStamp++
-            }
-        }
-        if ($r -is [hashtable] -and $action -ne 'closetab') { $r.tab = Get-TabName $h }
-        return $r
-    } catch {
-        return @{ success = $false; error = $_.Exception.Message }
-    }
-}
-
-# ---- Session keep-alive ----
-# Each <data folder>\keepalive\<site>.js defines `var site = { probe: fn, renew: fn }` with header lines
-# "// @name", "// @match <url regex>" and "// @renewBelow <seconds>". probe() returns
-# { loggedOut, remaining } read from the site without changing anything; renew() extends the
-# session without reloading. Files are re-read on each check, so a new site needs no restart.
-function Write-KeepAliveLog {
-    param([string]$Message, [string]$Color = 'Cyan')
-    Write-Host "[$(Get-Date -Format HH:mm:ss)] [keepalive] $Message" -ForegroundColor $Color
-    $script:KeepAlive.Events.Insert(0, [ordered]@{ time = (Get-Date -Format 'HH:mm:ss'); warn = ($Color -ne 'Cyan'); message = $Message })
-    if ($script:KeepAlive.Events.Count -gt 100) { $script:KeepAlive.Events.RemoveAt(100) }
-}
-
-function Get-KeepAliveSites {
-    if (-not (Test-Path $script:KeepAlive.SiteDir)) { return }
-    foreach ($f in Get-ChildItem $script:KeepAlive.SiteDir -Filter *.js -File) {
-        $src = Get-Content -LiteralPath $f.FullName -Raw
-        $meta = @{}
-        foreach ($m in [regex]::Matches($src, '(?m)^//\s*@(\w+)\s+(.+?)\s*$')) { $meta[$m.Groups[1].Value] = $m.Groups[2].Value }
-        if (-not $meta.match) { continue }
-        [pscustomobject]@{
-            Id         = $f.BaseName   # stable key (file name), used by the per-site on/off switch
-            Name       = if ($meta.name) { $meta.name } else { $f.BaseName }
-            Match      = $meta.match
-            RenewBelow = if ($meta.renewBelow) { [int]$meta.renewBelow } else { 300 }
-            Source     = $src
-        }
-    }
-}
-
-function Invoke-KeepAliveSite {
-    # Runs the profile's probe() or renew() in the tab over DevTools: the tab is not switched to or brought to the front.
-    param($Site, [ValidateSet('probe', 'renew')][string]$Call, [string]$TabId)
-    $js = "(function () {`n" + $Site.Source + "`n;return Promise.resolve(site.$Call()).then(function (r) { return JSON.stringify(r); });`n})()"
-    $raw = Invoke-DevToolsScript -TabId $TabId -Expression $js
-    return $raw | ConvertFrom-Json
 }
 
 # Tabs the user opens by hand (or Chrome restores) have no name, so switchtab can't reach them.
@@ -836,119 +648,131 @@ function Register-UnnamedTab {
     Write-Host ("[{0}] {1,-14} {2} {3}" -f (Get-Date -Format HH:mm:ss), 'named tab', $name, $Url) -ForegroundColor DarkCyan
 }
 
-function Get-KeepAliveTabName {
+function Update-TabNames {
+    # Names unnamed tabs and forgets closed ones. Returns the open tabs (DevTools: id = handle, url, title).
+    $pages = Get-DevToolsTabs
+    foreach ($n in @($script:Browser.Tabs.Keys)) { if (-not $pages.ContainsKey($script:Browser.Tabs[$n])) { $script:Browser.Tabs.Remove($n) } }
+    foreach ($p in $pages.Values) { Register-UnnamedTab -Handle ([string]$p.id) -Url ([string]$p.url) }
+    return $pages
+}
+
+function Enter-Tab {
+    # Puts the driver on the tab and back into the iframe it was in there, unless it's already there.
     param([string]$Handle)
-    $name = ($script:Browser.Tabs.GetEnumerator() | Where-Object { $_.Value -eq $Handle } | Select-Object -First 1).Name
-    if ($name) { "tab '$name'" } else { "tab $($Handle.Substring(0, [math]::Min(8, $Handle.Length)))" }
-}
-
-function Get-KeepAliveStatus {
-    if (-not $script:Browser) { return }
-    foreach ($kv in $script:KeepAlive.Tabs.GetEnumerator()) {
-        $t = $kv.Value
-        [ordered]@{
-            id                 = $kv.Key
-            tab                = Get-KeepAliveTabName $kv.Key
-            title              = $t.Title
-            url                = $t.Url
-            site               = $t.Site
-            siteId             = $t.SiteId
-            origin             = Get-SiteOrigin $t.Url
-            secondsLeftAtCheck = $t.Remaining
-            checkedAt          = if ($t.CheckedAt) { [DateTimeOffset]::new($t.CheckedAt).ToUnixTimeMilliseconds() } else { $null }
-            signedOut          = $t.LoggedOut
-            last               = $t.LastResult
-            lastRenew          = if ($t.LastRenew) { $t.LastRenew.ToString('HH:mm:ss') } else { $null }
-            nextCheck          = $t.NextCheck.ToString('HH:mm:ss')
-        }
-    }
-    # Tabs opened since the last keep-alive pass: listed now (with what's known), checked on the next pass.
-    try { $handles = @(@($script:Browser.Driver.WindowHandles) | Where-Object { $_ }) } catch { return }
-    foreach ($h in $handles) {
-        if ($script:KeepAlive.Tabs.ContainsKey($h)) { continue }
-        [ordered]@{
-            id = $h; tab = Get-KeepAliveTabName $h; title = $null; url = $null; site = $null; siteId = $null; origin = $null
-            secondsLeftAtCheck = $null; checkedAt = $null; signedOut = $false
-            last = 'new, not checked yet'; lastRenew = $null; nextCheck = 'next pass'
-        }
-    }
-}
-
-# Checks only the tabs that are due: each tab shortly before its session needs renewing, and at least every
-# MaxCheckSeconds in case it navigated to another site. Everything goes over DevTools (CWeb-DevTools.ps1), so no tab
-# is switched to or brought to the front, and the driver stays in the tab the last caller was using.
-function Invoke-KeepAliveTick {
-    param([switch]$Force)
-    $ka = $script:KeepAlive
-    $ka.LastTick = Get-Date
-    if (-not $script:Browser) { return }
-    $renewing = $ka.Enabled -or $Force   # when off, tabs are still looked at (and named), but nothing is renewed
-    try { $handles = @($script:Browser.Driver.WindowHandles); $pages = Get-DevToolsTabs } catch { return }   # alert open, browser gone
-    foreach ($h in @($ka.Tabs.Keys)) { if ($h -notin $handles) { $ka.Tabs.Remove($h) } }
-    $now = Get-Date
-    $due = @($handles | Where-Object { -not $ka.Tabs.ContainsKey($_) -or $ka.Tabs[$_].NextCheck -le $now })
-    if (-not $due.Count) { return }
-    $sites = if ($renewing) { @(Get-KeepAliveSites) } else { @() }
-    foreach ($h in $due) {
-        if (-not $ka.Tabs.ContainsKey($h)) {
-            $ka.Tabs[$h] = @{ Site = $null; Url = $null; Remaining = $null; LoggedOut = $false; LastRenew = $null; LastResult = 'new'; NextCheck = $now }
-        }
-        $t = $ka.Tabs[$h]
+    $d = $script:Browser.Driver
+    if ($script:DriverAt.Handle -eq $Handle -and $script:DriverAt.Stamp -eq $script:SwitchStamp) { return }
+    $d.SwitchTo().Window($Handle) | Out-Null   # also leaves any iframe: top-level document of that tab
+    foreach ($f in @($script:Frames[$Handle])) {
+        if (-not $f) { continue }
         try {
-            $page = $pages[$h]
-            if (-not $page) { throw 'DevTools does not list this tab.' }
-            $t.Url = [string]$page.url
-            $t.Title = [string]$page.title
-            Register-UnnamedTab -Handle $h -Url $t.Url
-            $site = $sites | Where-Object { $t.Url -match $_.Match } | Select-Object -First 1
-            $t.Site = if ($site) { $site.Name } else { $null }
-            $t.SiteId = if ($site) { $site.Id } else { $null }
-            if ($site -and -not (Test-KeepAliveSiteOn $site.Id)) {
-                # Turned off for this instance on the status page: recognised, never probed or renewed.
-                $t.Remaining = $null; $t.LoggedOut = $false; $t.LastResult = 'off for this site'
-                $t.NextCheck = $now.AddSeconds($ka.MaxCheckSeconds)
-                continue
-            }
-            if (-not $site) {
-                $t.Remaining = $null; $t.LastResult = if ($renewing) { 'no site profile' } else { 'keep-alive off' }
-                # A tab still waiting for a name (blank new-tab page) is looked at again soon.
-                $named = $script:Browser.Tabs.Values -contains $h
-                $t.NextCheck = $now.AddSeconds($(if ($named) { $ka.MaxCheckSeconds } else { 30 }))
-                continue
-            }
-            $p = Invoke-KeepAliveSite -Site $site -Call probe -TabId $h
-            if ($p.loggedOut) {
-                if (-not $t.LoggedOut) { Write-KeepAliveLog "$(Get-KeepAliveTabName $h) ($($site.Name)) is signed out -- log in again" Yellow }
-                $t.LoggedOut = $true; $t.Remaining = $null; $t.LastResult = 'signed out'
-                $t.NextCheck = $now.AddSeconds(120)
-                continue
-            }
-            $t.LoggedOut = $false
-            $left = [int]$p.remaining
-            $t.LastResult = "ok, ${left}s left"
-            if ($left -le $site.RenewBelow) {
-                $how = Invoke-KeepAliveSite -Site $site -Call renew -TabId $h
-                Start-Sleep -Seconds 2   # some sites renew asynchronously
-                $p2 = Invoke-KeepAliveSite -Site $site -Call probe -TabId $h
-                $after = if ($p2.loggedOut) { 0 } else { [int]$p2.remaining }
-                $t.LastRenew = Get-Date
-                $t.LastResult = "renewed ${left}s -> ${after}s ($how)"
-                if ($after -le $left) {
-                    Write-KeepAliveLog "$(Get-KeepAliveTabName $h) ($($site.Name)): renew did not extend the session: $($t.LastResult)" Yellow
-                    $t.Remaining = $after; $t.CheckedAt = Get-Date; $t.NextCheck = $now.AddSeconds(60)
-                    continue
-                }
-                Write-KeepAliveLog "$(Get-KeepAliveTabName $h) ($($site.Name)): $($t.LastResult)"
-                $left = $after
-            }
-            $t.Remaining = $left
-            $t.CheckedAt = Get-Date
-            $t.NextCheck = $now.AddSeconds([math]::Max(30, [math]::Min($ka.MaxCheckSeconds, $left - $site.RenewBelow - 15)))
+            if ($f.ContainsKey('frameId')) { Chrome-SwitchToFrame -Browser $script:Browser -FrameId $f.frameId }
+            elseif ($f.ContainsKey('frameName')) { Chrome-SwitchToFrame -Browser $script:Browser -FrameName $f.frameName }
+            else { Chrome-SwitchToFrame -Browser $script:Browser -FrameIndex $f.frameIndex }
         } catch {
-            $t.LastResult = "error: $($_.Exception.Message)"
-            $t.NextCheck = $now.AddSeconds(120)
-            Write-KeepAliveLog "$(Get-KeepAliveTabName $h): $($t.LastResult)" Yellow
+            # The frame isn't there any more (the page changed): stay on the top-level page.
+            $script:Frames.Remove($Handle); $d.SwitchTo().Window($Handle) | Out-Null; break
         }
+    }
+    $script:DriverAt = @{ Handle = $Handle; Stamp = $script:SwitchStamp }
+}
+
+function Get-WorkTab {
+    # The tab a command without `tab` runs in: the current one, unless it's gone or a keep-alive tab.
+    $d = $script:Browser.Driver
+    $handles = @($d.WindowHandles)
+    $ka = @($script:Browser.Tabs.GetEnumerator() | Where-Object { $_.Name.StartsWith('keepalive-') } | ForEach-Object { $_.Value })
+    $h = $script:DriverAt.Handle
+    if (-not $h -or $h -notin $handles) { try { $h = $d.CurrentWindowHandle } catch { $h = $null } }
+    if (-not $h -or $h -notin $handles -or $h -in $ka) { $h = $handles | Where-Object { $_ -notin $ka } | Select-Object -Last 1 }
+    if (-not $h) { $h = $handles | Select-Object -Last 1 }
+    return $h
+}
+
+function Invoke-TabAction {
+    # Runs one /api command in its tab (see the comment above $script:Frames).
+    param([hashtable]$Body)
+    $action = ([string]$Body.action).ToLower()
+    if ($action -in 'start', 'stop') {
+        $r = Invoke-BrowserAction -Body $Body
+        if ($r.success) { Reset-TabState }
+        return $r
+    }
+    if (-not $action -or $action -in 'status', 'keepalive') { return Invoke-BrowserAction -Body $Body }
+    if (-not (Confirm-InstanceBrowser)) {
+        return @{ success = $false; error = "Chrome didn't start: $script:BrowserStartError Logs: $($script:LogDir)" }
+    }
+    $d = $script:Browser.Driver
+
+    try {
+        $name = if ($action -in 'newtab', 'switchtab') { [string]$Body.name } else { [string]$Body.tab }
+        if ($action -eq 'newtab' -and -not $name) { $name = [string]$Body.tab }
+        $h = if ($name) { Get-TabHandleByName $name } else { $null }
+
+        switch ($action) {
+            'switchtab' {
+                if (-not $name) { return @{ success = $false; error = "Missing 'name' parameter" } }
+                if (-not $h) { return @{ success = $false; error = "No tab named '$name'. Run listtabs." } }
+                Enter-Tab $h
+                return @{ success = $true; tab = $name }
+            }
+            'newtab' {
+                if ($h) {
+                    # Already open: use it (and load the address, if one was given).
+                    Enter-Tab $h
+                    if ($Body.url) { Chrome-Navigate -Browser $script:Browser -Url $Body.url | Out-Null; $script:Frames.Remove($h) }
+                    return @{ success = $true; tab = $name; url = $Body.url; existing = $true }
+                }
+                $r = Invoke-BrowserAction -Body @{ action = 'newtab'; url = $Body.url; name = $name }
+                if ($r.success) {
+                    $h = $d.CurrentWindowHandle
+                    if (-not $name) { Register-UnnamedTab -Handle $h -Url $d.Url }   # unnamed: named after its site
+                    $script:DriverAt = @{ Handle = $h; Stamp = $script:SwitchStamp }
+                    $r.tab = Get-TabName $h
+                }
+                return $r
+            }
+        }
+        if ($action -in $script:NoTabActions) { return Invoke-BrowserAction -Body $Body }
+
+        # This server answers one request at a time, so loading its own page from a command would wait on itself.
+        if ($action -eq 'navigate' -and [string]$Body.url -match "^https?://(127\.0\.0\.1|localhost):$($script:Port)(/|$)") {
+            return @{ success = $false; error = "That's this CWeb's own status page: read http://127.0.0.1:$($script:Port)/status.json with curl instead." }
+        }
+
+        if ($name -and -not $h) {
+            # A new tab name: navigate opens it; anything else needs it open first.
+            if ($action -ne 'navigate') { return @{ success = $false; error = "No tab named '$name'. Open it with navigate (tab + url), or run listtabs." } }
+            return Invoke-TabAction -Body @{ action = 'newtab'; name = $name; url = $Body.url }
+        }
+        if (-not $h) { $h = Get-WorkTab }
+
+        Enter-Tab $h
+        $r = Invoke-BrowserAction -Body $Body
+
+        # Keep the tab's iframe position up to date.
+        if ($r.success) {
+            if ($action -eq 'switchtoframe') {
+                if ($Body.default) { $script:Frames.Remove($h) }
+                else {
+                    $spec = if ($Body.frameId) { @{ frameId = $Body.frameId } } elseif ($Body.frameName) { @{ frameName = $Body.frameName } } else { @{ frameIndex = [int]$Body.frameIndex } }
+                    if (-not $script:Frames.ContainsKey($h)) { $script:Frames[$h] = [System.Collections.Generic.List[object]]::new() }
+                    $script:Frames[$h].Add($spec)
+                }
+            } elseif ($action -in $script:NewPageActions) {
+                $script:Frames.Remove($h)
+            } elseif ($action -eq 'closetab') {
+                $script:Frames.Remove($h)
+                foreach ($n in @($script:Browser.Tabs.Keys | Where-Object { $script:Browser.Tabs[$_] -eq $h })) { $script:Browser.Tabs.Remove($n) }
+                $script:DriverAt = @{ Handle = $null; Stamp = -1 }
+                $next = Get-WorkTab
+                if ($next) { Enter-Tab $next }
+                return $r
+            }
+        }
+        if ($r -is [hashtable]) { $r.tab = Get-TabName $h }
+        return $r
+    } catch {
+        return @{ success = $false; error = $_.Exception.Message }
     }
 }
 
@@ -1001,15 +825,18 @@ function Add-RequestStat {
 }
 
 function Get-StatusData {
-    $browser = [ordered]@{ running = [bool]$script:Browser; startError = $script:BrowserStartError; closed = $script:BrowserClosed; currentId = $null; currentTab = $null; url = $null; tabCount = 0 }
+    $browser = [ordered]@{ running = [bool]$script:Browser; startError = $script:BrowserStartError; closed = $script:BrowserClosed; tabCount = 0 }
+    $tabs = @()
     if ($script:Browser) {
+        # Read over DevTools: no tab is switched to. Empty if Chrome has just closed; the next command reopens it.
         try {
-            $d = $script:Browser.Driver
-            $browser.tabCount = @($d.WindowHandles).Count
-            $browser.currentId = $d.CurrentWindowHandle
-            $browser.currentTab = Get-KeepAliveTabName $d.CurrentWindowHandle
-            $browser.url = $d.Url
-        } catch { $browser.url = "(unavailable: $($_.Exception.Message))" }
+            $pages = Update-TabNames
+            $browser.tabCount = $pages.Count
+            $tabs = @($pages.Values | ForEach-Object {
+                $n = Get-TabName ([string]$_.id)
+                [ordered]@{ id = [string]$_.id; name = $n; title = [string]$_.title; url = [string]$_.url; keepAlive = [bool]($n -and $n.StartsWith('keepalive-')) }
+            } | Sort-Object { $_.keepAlive }, { $_.name })
+        } catch { $browser.running = $false }
     }
     [ordered]@{
         now       = [DateTimeOffset]::Now.ToUnixTimeMilliseconds()
@@ -1029,27 +856,11 @@ function Get-StatusData {
             [pscustomobject]@{ name = $script:InstanceName; label = $script:Inst.Label; port = $script:Port; running = $true }
         })
         browser   = $browser
-        # Per tab (by window handle): the client that owns it and the clients whose current tab it is.
-        tabUse    = $(
-            $use = [ordered]@{}
-            if ($script:Browser) {
-                # Empty if Chrome has just closed (the driver then answers null, not an error); Test-InstanceBrowser
-                # notices that on the next pass.
-                $handles = try { @(@($script:Browser.Driver.WindowHandles) | Where-Object { $_ }) } catch { @() }
-                foreach ($h in $handles) {
-                    $users = @($script:ClientCtx.GetEnumerator() | Where-Object { $_.Value.Handle -eq $h } | ForEach-Object { $_.Key } | Sort-Object)
-                    $use[$h] = [ordered]@{ owner = $script:TabOwners[$h]; users = $users }
-                }
-            }
-            $use
-        )
-        access    = Get-AccessStatus
+        tabs      = $tabs
         keepAlive = [ordered]@{
             enabled = $script:KeepAlive.Enabled
-            sites   = @(Get-KeepAliveSites | ForEach-Object { [ordered]@{ id = $_.Id; name = $_.Name; match = $_.Match; on = (Test-KeepAliveSiteOn $_.Id) } })
-            requests = @($script:KaAdmin.Requests)
-            drafts  = @(Get-KeepAliveDrafts)
-            tabs    = @(Get-KeepAliveStatus)
+            folder  = $script:KeepAlive.SiteDir
+            sites   = @(Get-KeepAliveStatus)
             events  = @($script:KeepAlive.Events)
         }
         requests  = [ordered]@{ total = $script:Stats.Requests; errors = $script:Stats.Errors; byAction = $script:Stats.ByAction; byClient = $script:Stats.ByClient }
@@ -1057,40 +868,11 @@ function Get-StatusData {
     }
 }
 
-# The page's actions (POST /status/closetab). Unlike reads, a write must also be safe from other
-# websites making the browser send it, so it needs the X-Status-Request header (a foreign site can't
-# add it without a CORS preflight, which this server never approves) and our own Origin. The Origin is required, not
-# just checked when sent: the page's fetch always sends it, and a script has to add it on purpose, so an agent doesn't
-# start, create or delete instances by calling these by accident (any program of the user's can still fake it).
+# The page's actions (POST /status/<action>). A write must be safe from other websites making the browser send it, so it
+# needs the X-Status-Request header: a foreign site can't add it without a CORS preflight, which this server never approves.
 function Test-StatusActionRequest {
     param([System.Net.HttpListenerRequest]$Request)
-    if (-not (Test-LocalStatusRequest -Request $Request)) { return $false }
-    if ($Request.Headers['X-Status-Request'] -ne '1') { return $false }
-    $origin = $Request.Headers['Origin']
-    return [bool]$origin -and $origin -in @("http://127.0.0.1:$($script:Port)", "http://localhost:$($script:Port)")
-}
-
-function Remove-InstanceFromStatus {
-    # Delete on the status page: stops the instance if it's running (its own Stop server: Chrome closes cleanly), then
-    # takes it off the list. Its folder stays as a leftover profile. Deleting this instance stops this server last.
-    param([string]$Name)
-    $other = Get-CWebInstance -Name $Name -Root $script:CWebRoot
-    if ($other.AllNames.Count -le 1) { return @{ success = $false; error = "'$Name' is the only instance. Create another one before deleting it." } }
-    $here = $other.Name -eq $script:InstanceName
-    if (-not $here -and (Test-CWebServerProcess -Instance $other)) {
-        $p = $other.Port
-        try {
-            Invoke-RestMethod "http://127.0.0.1:$p/status/stopserver" -Method POST -ContentType 'application/json' -Body '{}' `
-                -Headers @{ 'X-Status-Request' = '1'; 'Origin' = "http://127.0.0.1:$p" } -TimeoutSec 30 | Out-Null
-        } catch { }
-        $deadline = (Get-Date).AddSeconds(30)
-        while ((Test-CWebServerProcess -Instance $other) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
-        if (Test-CWebServerProcess -Instance $other) { return @{ success = $false; error = "'$Name' didn't stop within 30 seconds, so it wasn't deleted. Stop it on its own status page, then try again." } }
-    }
-    Remove-CWebInstance -Name $other.Name -Root $script:CWebRoot
-    Write-Host "[$(Get-Date -Format HH:mm:ss)] instance '$($other.Name)' deleted from the status page; its folder is kept as a leftover profile" -ForegroundColor Yellow
-    if ($here) { $script:StopRequested = $true }
-    return @{ success = $true; deleted = $other.Name; stopping = $here; message = "Deleted '$($other.Name)'. Its profile and sign-ins are kept: Restore it under + New, Leftover profiles." }
+    return (Test-LocalStatusRequest -Request $Request) -and $Request.Headers['X-Status-Request'] -eq '1'
 }
 
 function Close-TabByHandle {
@@ -1100,23 +882,17 @@ function Close-TabByHandle {
     $handles = @($d.WindowHandles)
     if ($Handle -notin $handles) { return @{ success = $false; error = 'That tab is already closed.' } }
     if ($handles.Count -le 1) { return @{ success = $false; error = "Can't close the last tab; that would end the browser." } }
-    $label = Get-KeepAliveTabName $Handle
-    $origin = $d.CurrentWindowHandle
-    $d.SwitchTo().Window($Handle) | Out-Null
-    $d.Close()
+    $label = Get-TabLabel $Handle
+    Close-DevToolsTab -TabId $Handle   # no switching: the tab agents are on stays where it is
     foreach ($name in @($script:Browser.Tabs.Keys | Where-Object { $script:Browser.Tabs[$_] -eq $Handle })) { $script:Browser.Tabs.Remove($name) }
-    $script:KeepAlive.Tabs.Remove($Handle)
-    Remove-TabState $Handle   # its owner and anyone's position in it
-    $script:SwitchStamp++
-    # Back to the tab the API was on; if that's the one closed, the last remaining tab.
-    $back = if ($origin -ne $Handle) { $origin } else { @($d.WindowHandles)[-1] }
-    $d.SwitchTo().Window($back) | Out-Null
-    return @{ success = $true; closed = $label; current = (Get-KeepAliveTabName $back) }
+    $script:Frames.Remove($Handle)
+    if ($script:DriverAt.Handle -eq $Handle) { $script:DriverAt = @{ Handle = $null; Stamp = -1 } }
+    return @{ success = $true; closed = $label }
 }
 
 function Open-TabFromStatus {
     param([string]$Url, [string]$Name)
-    if (-not $script:Browser) { return @{ success = $false; error = 'No browser running' } }
+    if (-not (Confirm-InstanceBrowser)) { return @{ success = $false; error = "Chrome didn't start: $script:BrowserStartError" } }
     $u = $null
     if (-not [Uri]::TryCreate($Url, [UriKind]::Absolute, [ref]$u) -or $u.Scheme -notin @('http', 'https')) {
         return @{ success = $false; error = 'Enter a full http:// or https:// address.' }
@@ -1125,18 +901,9 @@ function Open-TabFromStatus {
         if ($Name -notmatch '^[A-Za-z0-9_-]{1,40}$') { return @{ success = $false; error = 'Name: letters, numbers, - and _ only.' } }
         if ($script:Browser.Tabs.ContainsKey($Name)) { return @{ success = $false; error = "A tab named '$Name' already exists." } }
     }
-    $d = $script:Browser.Driver
-    $origin = $d.CurrentWindowHandle
-    try {
-        if ($Name) { Chrome-NewTab -Browser $script:Browser -Url $u.AbsoluteUri -Name $Name }
-        else { Chrome-NewTab -Browser $script:Browser -Url $u.AbsoluteUri; Register-UnnamedTab -Handle $d.CurrentWindowHandle -Url $d.Url }
-        $handle = $d.CurrentWindowHandle
-    } finally {
-        # Put the API back on the tab it was using; the new tab is the user's to look at.
-        try { $d.SwitchTo().Window($origin) | Out-Null } catch { }
-        $script:SwitchStamp++
-    }
-    return @{ success = $true; opened = (Get-KeepAliveTabName $handle) }
+    $id = New-DevToolsTab -Url $u.AbsoluteUri
+    if ($Name) { $script:Browser.Tabs[$Name] = $id } else { Register-UnnamedTab -Handle $id -Url $u.AbsoluteUri }
+    return @{ success = $true; opened = (Get-TabLabel $id) }
 }
 
 function Invoke-StatusAction {
@@ -1151,70 +918,36 @@ function Invoke-StatusAction {
         $body = $reader.ReadToEnd() | ConvertFrom-Json -AsHashtable
         $reader.Close()
     } catch { $body = @{} }
-    $action = ($Request.Url.AbsolutePath -split '/')[-1]   # closetab | newtab | stopserver | approve | deny | revoke | startinstance | newinstance | deleteinstance | ...
+    if (-not $body) { $body = @{} }
+    $action = ($Request.Url.AbsolutePath -split '/')[-1]
+    $target = ''
     try {
-        if ($action -eq 'deleteinstance') {
-            $result = Remove-InstanceFromStatus -Name ([string]$body.name)
-            $target = [string]$body.name
-        } elseif ($action -eq 'deleteprofile') {
-            $result = Remove-CWebLeftoverProfile -Name ([string]$body.name) -Root $script:CWebRoot
-            $target = [string]$body.name
-        } elseif ($action -in 'kasite', 'karequest', 'kadismiss', 'kaenable', 'kadiscard') {
-            switch ($action) {
-                'kasite'    { $result = Set-KeepAliveSiteState -Id ([string]$body.site) -On ([bool]$body.on); $target = "$($body.site) $(if ($body.on) { 'on' } else { 'off' })" }
-                'karequest' { $result = New-KeepAliveRequest -Handle ([string]$body.id); $target = [string]$result.site }
-                'kadismiss' { $result = Remove-KeepAliveRequest -Id ([string]$body.request); $target = [string]$result.dismissed }
-                'kaenable'  { $result = Enable-KeepAliveDraft -Id ([string]$body.draft); $target = [string]$body.draft }
-                'kadiscard' { $result = Remove-KeepAliveDraft -Id ([string]$body.draft); $target = [string]$body.draft }
+        switch ($action) {
+            'closetab'      { $result = Close-TabByHandle -Handle ([string]$body.id); $target = [string]$result.closed }
+            'newtab'        { $result = Open-TabFromStatus -Url ([string]$body.url) -Name ([string]$body.name); $target = "$($result.opened) $($body.url)" }
+            'stopserver'    {
+                # Answer first; the main loop then exits and its cleanup closes Chrome and the listener.
+                $script:StopRequested = $true
+                $result = @{ success = $true; message = 'Stopping: closing Chrome, then the server.' }
             }
-        } elseif ($action -in 'startinstance', 'newinstance') {
-            # Launch another instance's server without waiting for it (this server handles one request at a time);
-            # the switcher shows it once it's up.
-            if ($action -eq 'newinstance') {
-                $other = New-CWebInstance -Name ([string]$body.name) -Label ([string]$body.label) -Root $script:CWebRoot
-                Write-Host "[$(Get-Date -Format HH:mm:ss)] new instance '$($other.Name)' ($($other.Label)) on port $($other.Port)" -ForegroundColor Green
-            } else {
+            'startbrowser'  { $result = if (Confirm-InstanceBrowser) { @{ success = $true; message = 'Chrome is open.' } } else { @{ success = $false; error = "Chrome didn't start: $script:BrowserStartError" } } }
+            'startinstance' {
+                # Launch another instance's server without waiting for it; the switcher shows it once it's up.
                 $other = Get-CWebInstance -Name ([string]$body.name) -Root $script:CWebRoot
+                if ($other.Name -eq $script:InstanceName -or (Test-CWebServerProcess -Instance $other)) { $result = @{ success = $true; message = 'Already running.' } }
+                else { Start-CWebServerProcess -Instance $other -Root $script:CWebRoot | Out-Null; $result = @{ success = $true; message = "Starting $($other.Label)." } }
+                $target = $other.Name
             }
-            if ($other.Name -eq $script:InstanceName -or (Test-CWebServerProcess -Instance $other)) {
-                $result = @{ success = $true; name = $other.Name; port = $other.Port; message = 'Already running.' }
-            } else {
-                Start-CWebServerProcess -Instance $other -Root $script:CWebRoot | Out-Null
-                $result = @{ success = $true; name = $other.Name; label = $other.Label; port = $other.Port; message = "Starting $($other.Label) on port $($other.Port)." }
-            }
-            $target = "$($other.Name) port $($other.Port)"
-        } elseif ($action -in 'approve', 'deny') {
-            $result = Set-AttachDecision -Ref ([string]$body.ref) -Approve ($action -eq 'approve')
-            $target = "from status page: $(if ($result.approved) { $result.approved } elseif ($result.denied) { $result.denied })"
-        } elseif ($action -eq 'revoke') {
-            $result = Revoke-CWebClient -Client ([string]$body.client)
-            $target = "from status page: $($body.client)"
-        } elseif ($action -eq 'stopserver') {
-            # Answer first; the main loop then exits and its cleanup closes Chrome and the listener.
-            $script:StopRequested = $true
-            $result = @{ success = $true; message = 'Stopping: closing Chrome, then the server.' }
-            $target = 'from status page'
-        } elseif ($action -eq 'startbrowser') {
-            # Open Chrome again after it was closed (status page, Start-CWeb). Its tabs and sign-ins come back.
-            if ($script:Browser) { $result = @{ success = $true; message = 'Chrome is already open.' } }
-            else {
-                $result = Start-InstanceBrowser -Hidden $script:Inst.Hidden -Persist $true
-                if ($result.success) { Reset-ClientState }
-            }
-            $target = 'from status page'
-        } elseif ($action -eq 'newtab') {
-            $result = Open-TabFromStatus -Url ([string]$body.url) -Name ([string]$body.name)
-            $target = "from status page: $(if ($result.opened) { $result.opened }) $($body.url)"
-        } else {
-            $url = if ($script:KeepAlive.Tabs.ContainsKey([string]$body.id)) { $script:KeepAlive.Tabs[[string]$body.id].Url }
-            $result = Close-TabByHandle -Handle ([string]$body.id)
-            $target = "from status page: $(if ($result.closed) { $result.closed } else { 'tab' }) $url"
+            'kaadd'         { $result = Add-KeepAliveSite -Source ([string]$body.source); $target = [string]$result.site }
+            'karemove'      { $result = Remove-KeepAliveSite -Id ([string]$body.site); $target = [string]$body.site }
+            'kacheck'       { Invoke-KeepAliveTick -Force; $result = @{ success = $true } }
+            default         { $result = @{ success = $false; error = "Unknown action '$action'." } }
         }
     } catch {
         $result = @{ success = $false; error = $_.Exception.Message }
     }
     Send-Response -Response $Response -Data $result
-    try { Add-RequestStat -Body @{ action = $action } -Result $result -Ms $timer.Elapsed.TotalMilliseconds -Target ($target -replace '^from status page:\s*', '').Trim() -Client 'status page' } catch { }
+    try { Add-RequestStat -Body @{ action = $action } -Result $result -Ms $timer.Elapsed.TotalMilliseconds -Target $target.Trim() -Client 'status page' } catch { }
 }
 
 function Send-StatusPage {
@@ -1226,12 +959,6 @@ function Send-StatusPage {
         if ($Request.Url.AbsolutePath -eq '/status.json') {
             $type = 'application/json'
             $text = Get-StatusData | ConvertTo-Json -Depth 8 -Compress
-        } elseif ($Request.Url.AbsolutePath -eq '/status/profiles.json') {
-            # For the New instance form, fetched when it opens (folder sizes take a moment, so not in /status.json).
-            $type = 'application/json'
-            $text = [ordered]@{
-                leftovers = @(Get-CWebLeftoverProfiles -Root $script:CWebRoot)
-            } | ConvertTo-Json -Depth 5 -Compress
         } else {
             $type = 'text/html; charset=utf-8'
             $text = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'status.html') -Raw
@@ -1248,6 +975,20 @@ function Send-StatusPage {
     } finally {
         try { $Response.OutputStream.Close() } catch { }
     }
+}
+
+function Test-ApiKey {
+    # The request carries this machine's key (constant-time compare) and doesn't come from a web page.
+    param([System.Net.HttpListenerRequest]$Request)
+    if (-not $Request.IsLocal -or $Request.Headers['Origin']) { return $false }
+    $k = [string]$Request.Headers['X-CWeb-Key']
+    if (-not $k) { $k = [string]$Request.Headers['X-API-Key'] }   # clients from before 2026.10.28.025
+    if (-not $k) { return $false }
+    $a = [Text.Encoding]::UTF8.GetBytes($k)
+    if ([System.Security.Cryptography.CryptographicOperations]::FixedTimeEquals($a, [Text.Encoding]::UTF8.GetBytes($script:ApiKey))) { return $true }
+    # The key file may have been replaced (deleted and made again) since this server started: read it once more.
+    $script:ApiKey = Initialize-CWebKey
+    return [System.Security.Cryptography.CryptographicOperations]::FixedTimeEquals($a, [Text.Encoding]::UTF8.GetBytes($script:ApiKey))
 }
 
 function Open-CWebListener {
@@ -1286,7 +1027,7 @@ try {
     Write-Host "  Status page: http://127.0.0.1:$($script:Port)/status"
     Write-Host ""
 
-    # "Here I am" file for the launcher and Connect-CWeb. No key in it.
+    # "Here I am" file for the launcher and clients. No key in it.
     [ordered]@{
         instance = $script:InstanceName
         port     = $script:Port
@@ -1296,7 +1037,8 @@ try {
         folder   = $PSScriptRoot
     } | ConvertTo-Json | Set-Content -LiteralPath $script:Inst.ServerFile -Encoding utf8
 
-    # Open Chrome now, so the launcher needs no key. Requests that arrive meanwhile wait in the listener's queue.
+    # Open Chrome now. Requests that arrive meanwhile wait in the listener's queue.
+    $script:LastStartAttempt = Get-Date
     $r = Start-InstanceBrowser -Hidden $script:Inst.Hidden -Persist $true
     if ($r.success -and $script:Inst.StartUrl) {
         try { Chrome-Navigate -Browser $script:Browser -Url $script:Inst.StartUrl | Out-Null }
@@ -1308,7 +1050,6 @@ try {
     $pending = $listener.GetContextAsync()
     while ($listener.IsListening) {
         if (((Get-Date) - $script:KeepAlive.LastTick).TotalSeconds -ge $script:KeepAlive.TickSeconds) {
-            try { Test-InstanceBrowser } catch { Write-Host "  (Chrome check failed: $($_.Exception.Message))" -ForegroundColor DarkYellow }
             try { Invoke-KeepAliveTick } catch { Write-KeepAliveLog "check failed: $($_.Exception.Message)" Yellow }
         }
         try {
@@ -1316,85 +1057,67 @@ try {
             $context = $pending.Result
         } catch { break }   # listener stopped (shutdown)
         $pending = $listener.GetContextAsync()
-        Save-CWebAccessIfDue
-        try { Test-InstanceBrowser } catch { Write-Host "  (Chrome check failed: $($_.Exception.Message))" -ForegroundColor DarkYellow }
         try {
         $request = $context.Request
         $response = $context.Response
+        $path = $request.Url.AbsolutePath
 
         # Status page (polled every few seconds, so not logged)
-        if ($request.HttpMethod -eq "GET" -and $request.Url.AbsolutePath -in @('/', '/status', '/status.json', '/status/profiles.json')) {
+        if ($request.HttpMethod -eq "GET" -and $path -in @('/', '/status', '/status.json')) {
             Send-StatusPage -Request $request -Response $response
             continue
         }
-        if ($request.HttpMethod -eq "POST" -and $request.Url.AbsolutePath -in @('/status/closetab', '/status/newtab', '/status/stopserver', '/status/startbrowser', '/status/approve', '/status/deny', '/status/revoke', '/status/startinstance', '/status/newinstance', '/status/kasite', '/status/karequest', '/status/kadismiss', '/status/kaenable', '/status/kadiscard', '/status/deleteprofile', '/status/deleteinstance')) {
+        if ($request.HttpMethod -eq "POST" -and $path.StartsWith('/status/')) {
             Invoke-StatusAction -Request $request -Response $response
             if ($script:StopRequested) { Write-Host "[$(Get-Date -Format HH:mm:ss)] Stop requested from the status page"; break }
             continue
         }
 
-        # Attach: POST /attach {client} asks for access; GET /attach/<ticket> waits for the decision and collects the key.
-        $path = $request.Url.AbsolutePath
+        # Clients from before 2026.10.28.025 ask for access with POST /attach, then collect a key with GET /attach/<ticket>.
+        # Nothing is approved any more: they get this machine's key at once. Same rule as the API (the custom header a
+        # web page can't send, no Origin), so only local programs get it.
         if ($path -eq '/attach' -or $path.StartsWith('/attach/')) {
-            if (-not (Test-AttachRequest -Request $request)) {
-                Send-Response -Response $response -Data @{ success = $false; error = 'Forbidden: /attach is for local scripts (send X-CWeb-Attach: 1, no Origin).' } -StatusCode 403
-            } elseif ($request.HttpMethod -eq 'POST' -and $path -eq '/attach') {
-                try {
-                    $reader = New-Object System.IO.StreamReader($request.InputStream)
-                    $ab = $reader.ReadToEnd() | ConvertFrom-Json -AsHashtable; $reader.Close()
-                } catch { $ab = @{} }
-                Send-Response -Response $response -Data (New-AttachRequest -Client ([string]$ab.client))
-            } elseif ($request.HttpMethod -eq 'GET' -and $path.StartsWith('/attach/')) {
-                $r = Get-AttachState -Ticket $path.Substring(8)
-                Send-Response -Response $response -Data $r -StatusCode $(if ($r.status -eq 'unknown') { 404 } else { 200 })
+            if (-not $request.IsLocal -or $request.Headers['Origin'] -or $request.Headers['X-CWeb-Attach'] -ne '1') {
+                Send-Response -Response $response -Data @{ success = $false; error = 'Forbidden' } -StatusCode 403
+            } elseif ($request.HttpMethod -eq 'POST') {
+                Send-Response -Response $response -Data @{ success = $true; ticket = 'auto'; status = 'pending' }
             } else {
-                Send-Response -Response $response -Data @{ success = $false; error = 'Use POST /attach or GET /attach/<ticket>' } -StatusCode 404
+                Send-Response -Response $response -Data @{ success = $true; status = 'approved'; key = $script:ApiKey }
             }
             continue
         }
 
-        # No CORS headers: only local scripts use the API, never web pages. A preflight gets no approval.
+        # No CORS headers: only local programs use the API, never web pages. A preflight gets no approval.
         if ($request.HttpMethod -eq "OPTIONS") {
             $response.StatusCode = 204
             $response.Close()
             continue
         }
 
-        # Log request (API calls are logged after they run, as a readable action line)
-        if (-not ($request.HttpMethod -eq "POST" -and $request.Url.AbsolutePath -eq "/api")) {
-            Write-Host "[$(Get-Date -Format HH:mm:ss)] $($request.HttpMethod) $($request.Url.PathAndQuery)"
-        }
-
-        # Check authentication: the key of a client approved on the status page
-        $script:Caller = Resolve-CWebClient -Request $request
-        if (-not $script:Caller) {
-            Send-Response -Response $response -Data @{ success = $false; error = "Unauthorized: no approved key. Attach first (POST /attach), or the key was revoked." } -StatusCode 401
+        if (-not ($request.HttpMethod -eq "POST" -and $path -eq "/api")) {
+            Send-Response -Response $response -Data @{ success = $false; error = "Use POST /api" } -StatusCode 404
             continue
         }
-
-        # Handle POST /api
-        if ($request.HttpMethod -eq "POST" -and $request.Url.AbsolutePath -eq "/api") {
-            $reader = New-Object System.IO.StreamReader($request.InputStream)
-            $bodyText = $reader.ReadToEnd()
-            $reader.Close()
-
-            try {
-                $body = $bodyText | ConvertFrom-Json -AsHashtable
-                $timer = [System.Diagnostics.Stopwatch]::StartNew()
-                $result = Invoke-ClientAction -Body $body -Client $script:Caller
-                # A site the user flagged to keep alive: handed to the caller with its reply (not while it's working one).
-                if ($result -is [hashtable] -and $body.action -ne 'keepalive') {
-                    $task = Get-KeepAliveTask -Client $script:Caller
-                    if ($task) { $result.keepAliveTask = $task }
-                }
-                Send-Response -Response $response -Data $result
-                try { Add-RequestStat -Body $body -Result $result -Ms $timer.Elapsed.TotalMilliseconds -Client $script:Caller } catch { }
-            } catch {
-                Send-Response -Response $response -Data @{ success = $false; error = "Invalid JSON: $($_.Exception.Message)" } -StatusCode 400
-            }
-        } else {
-            Send-Response -Response $response -Data @{ success = $false; error = "Use POST /api" } -StatusCode 404
+        if (-not (Test-ApiKey -Request $request)) {
+            Send-Response -Response $response -Data @{ success = $false; error = "Unauthorized: send the key from $(Get-CWebKeyFile) (cweb.sh and CWeb-Client.ps1 do)." } -StatusCode 401
+            continue
         }
+        # Who's asking, for the status page and log only (cweb.sh sends the client name it was given, if any).
+        $client = [string]$request.Headers['X-CWeb-Client']
+        if ($client -notmatch '^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$') { $client = 'agent' }
+
+        $reader = New-Object System.IO.StreamReader($request.InputStream)
+        $bodyText = $reader.ReadToEnd()
+        $reader.Close()
+        try { $body = $bodyText | ConvertFrom-Json -AsHashtable }
+        catch {
+            Send-Response -Response $response -Data @{ success = $false; error = "Invalid JSON: $($_.Exception.Message)" } -StatusCode 400
+            continue
+        }
+        $timer = [System.Diagnostics.Stopwatch]::StartNew()
+        $result = Invoke-TabAction -Body $body
+        Send-Response -Response $response -Data $result
+        try { Add-RequestStat -Body $body -Result $result -Ms $timer.Elapsed.TotalMilliseconds -Client $client } catch { }
         } catch {
             Write-Host "  (request failed: $($_.Exception.Message))" -ForegroundColor DarkYellow
         }
@@ -1412,7 +1135,6 @@ try {
         $listener.Stop()
         $listener.Close()
     }
-    Save-CWebAccessIfDue -Now   # last-used times not yet written
     # Remove the "here I am" file only if it's ours, then free the instance lock.
     try {
         $sf = $script:Inst.ServerFile

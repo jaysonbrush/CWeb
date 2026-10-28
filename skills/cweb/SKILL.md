@@ -1,6 +1,6 @@
 ---
 name: cweb
-description: Use CWeb, the shared Chrome browser the user is signed in to, to work with websites (navigate, read pages, fill forms, run page scripts). Use when asked to use the browser, CWeb, "activate chrome", or do anything on a website that needs the user's sign-ins.
+description: Use CWeb, the shared Chrome browser the user is signed in to, to work with websites (navigate, read pages, fill forms, run page scripts), and to keep sites signed in. Use when asked to use the browser, CWeb, "activate chrome", "keep <site> alive", or do anything on a website that needs the user's sign-ins.
 allowed-tools: Bash, Read, Write
 user-invocable: true
 ---
@@ -10,72 +10,38 @@ user-invocable: true
 
 # CWeb
 
-CWeb is a REST server that drives a real Chrome window the user signs in to. Several agents share it; each works in its
-own tab. Full reference: `{{CWEB_WIN}}\claude.md`. Read it before anything beyond the basics below.
-If `cweb.sh` or Chrome is missing on this machine, CWeb isn't set up: ask the user (setup is `Setup-CWeb.cmd`).
-
-## 1. Connect
-
-Pick a client name (`<team>-<role>`, lowercase, e.g. `support-ticket-triage`) and keep it across sessions.
-
-```bash
-{{CWEB}}/cweb.sh support-ticket-triage connect
-```
-
-It attaches to the instance the user has running. The reply names it (`"instance":"work"`): use that name in every
-command below.
-
-- `connected`: carry on.
-- `waiting`: ask the user to approve your name at the `statusUrl` in the reply (Access tab), then run `connect` again.
-- `denied`: stop and ask the user.
-- `choose` (exit 6): several instances are running. Ask the user which one they work in, then
-  `{{CWEB}}/cweb.sh <instance> support-ticket-triage connect`.
-- `waiting` with "is starting": no instance was running, so `connect` started `work`; Chrome is still opening. Run
-  `connect` again.
-- `error` with "isn't running": the instance you named isn't running. Ask the user to start it, or connect without a name.
-
-When no instance runs, `connect` starts `work` for you. Never create, delete or stop an instance or start one any other
-way (no `Start-CWeb.cmd`, no status-page actions), and never edit `instances.json` or `config.json`.
-
-## 2. Work in your own tab
+A real Chrome window the user is signed in to, shared by every session. One command does everything; if CWeb isn't
+running, it starts it first. Nothing to connect or approve.
 
 ```bash
 cweb={{CWEB}}/cweb.sh
-$cweb work support-ticket-triage '{"action":"newtab","name":"tickets","url":"https://example.org"}'
-$cweb work support-ticket-triage '{"action":"getpagetext"}'
-$cweb work support-ticket-triage '{"action":"click","by":"CssSelector","value":"button[type=submit]"}'
+$cweb '{"action":"navigate","tab":"tickets","url":"https://example.org"}'
+$cweb '{"action":"getpagetext","tab":"tickets"}'
+$cweb '{"action":"click","tab":"tickets","by":"CssSelector","value":"button[type=submit]"}'
 ```
 
-- Commands run in **your** tab. Add `"tab":"<name>"` to run one command elsewhere; `listtabs` shows all tabs.
-- Tabs others opened are read-only for you. Tabs the user opened are shared: read them, ask before changing them.
-- Exit code 5 = not connected or key revoked: run `connect` again.
-
-## 3. Scripts and quotes
-
-Don't fight shell escaping. Build the body in PowerShell and send it on stdin:
+- **Always pass `"tab":"<name>"`**, a name of your own for your work. `navigate` with a new name opens that tab.
+  `listtabs` shows every tab; tabs the user opened are named after their site. Read them; ask before changing them.
+  Leave `keepalive-*` tabs alone.
+- The reply is JSON; check `success`. Exit 3 = CWeb is still starting (Chrome reopening its tabs): run it again.
+- Default instance is `work`. Use `$cweb personal '<json>'` only when the user says so.
+- Long scripts or quotes: build the body in PowerShell and pipe it in:
 
 ```bash
-pwsh -NoProfile -Command '@{ action = "executescript"; script = @"
-var rows = [];
-document.querySelectorAll("table tr").forEach(function (tr) { rows.push(tr.innerText); });
-return rows;
-"@ } | ConvertTo-Json -Compress' | {{CWEB}}/cweb.sh work support-ticket-triage -
+pwsh -NoProfile -Command '@{ action = "executescript"; tab = "tickets"; script = @"
+return [...document.querySelectorAll("table tr")].map(tr => tr.innerText);
+"@ } | ConvertTo-Json -Compress' | $cweb -
 ```
 
-`executescript` returns whatever the script `return`s, in `result`.
+## Keep a site signed in
 
-## Rules
+When the user says "keep <site> alive": follow `{{CWEB_WIN}}\KEEPALIVE.md` now, in this conversation. You write a small
+script, CWeb tests it on the live site and runs it from then on. Never write your own refresh loop.
 
-- Never write a refresh loop; the keep-alive keeps sessions alive.
-- If a reply has `keepAliveTask` (or the `connect` reply has `keepAliveRequests`), the user flagged that site to stay
-  signed in. Handle it right away, without asking the user: build and install a profile (`{{CWEB_WIN}}\KEEPALIVE.md`),
-  then carry on. It's live as soon as it installs.
-- Keep waits short (`timeout` of a few seconds, then retry): every other agent waits while yours runs.
-- Never print or save a key.
-
-## Common actions
+## Actions
 
 `navigate` (`url`), `gettitle`, `geturl`, `getpagetext`, `findelement(s)` / `click` / `sendkeys` / `gettext` /
-`getattribute` (`by`, `value`), `selectoption`, `waitforelement`, `switchtoframe`, `executescript`, `screenshot`
-(`filePath`), `newtab`, `switchtab`, `listtabs`, `closetab`, `releasetab`.
+`getattribute` (`by`, `value`), `selectoption`, `waitforelement`, `switchtoframe`, `executescript` (`script`; returns
+what it `return`s, in `result`), `screenshot` (`filePath`), `listtabs`, `closetab`, `getcookies`, `keepalive`.
 Locators (`by`): `Id`, `Name`, `ClassName`, `TagName`, `CssSelector`, `XPath`, `LinkText`, `PartialLinkText`.
+Keep waits short (a few seconds, then retry): commands run one at a time. More: `{{CWEB_WIN}}\claude.md`.

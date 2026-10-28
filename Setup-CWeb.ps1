@@ -10,7 +10,7 @@
       wherever it lives.
     - Creates the data folder (default %USERPROFILE%\CWebData): profiles, keys, logs and this machine's own instances
       live there, never in the repo folder. An older install's %LOCALAPPDATA%\CWeb is moved there.
-    - Checks itself: Test-CWeb, then a short headless start and stop of the 'test' instance.
+    - Checks itself: Test-CWeb, then a short headless Chrome start on a throwaway profile.
 
     Runs from any folder; it prints the exact paths for this machine at the end.
 
@@ -29,7 +29,7 @@ param(
     [switch]$Uninstall,    # list what CWeb stored on this machine; with -Yes, remove it
     [switch]$Yes,
     [switch]$Force,        # reinstall Chrome, ChromeDriver and Selenium even if the versions match
-    [switch]$SkipTest      # don't start the test instance at the end
+    [switch]$SkipTest      # don't start Chrome for the self-check at the end
 )
 
 $ErrorActionPreference = 'Stop'
@@ -213,25 +213,12 @@ if ($ok -and -not $Force) {
 Step 'Self-check'
 & pwsh -NoProfile -File (Join-Path $root 'Test-CWeb.ps1') | ForEach-Object { "  $_" }
 if ($LASTEXITCODE) { throw 'Test-CWeb.ps1 found a problem (above).' }
-if (-not $SkipTest -and -not (Get-CWebInstanceTable -Root $root).Contains('test')) {
-    Say "  No 'test' instance (deleted on the status page), so Chrome's start isn't checked. Restore it under + New to bring the check back." Yellow
-} elseif (-not $SkipTest) {
-    $test = Get-CWebInstance -Name 'test' -Root $root
-    if (Get-CWebRunningServer -Instance $test) {
-        Say "  The 'test' instance is already running; not starting it again." Yellow
-    } else {
-        Say "  Starting the 'test' instance (headless) to check Chrome starts..."
-        $st = Start-CWebServer -Instance $test -Root $root -WaitSeconds 120
-        $okStart = [bool]$st.browser.running
-        $testPort = [int]$st.server.port   # may differ from the configured port if that one was taken
-        try {
-            Invoke-RestMethod "http://127.0.0.1:$testPort/status/stopserver" -Method POST -ContentType 'application/json' -Body '{}' `
-                -Headers @{ 'X-Status-Request' = '1'; 'Origin' = "http://127.0.0.1:$testPort" } | Out-Null
-        } catch { }
-        if (-not $okStart) { throw "The test instance started but Chrome didn't: $($st.browser.startError). Logs: $($test.LogDir)" }
-        Start-Sleep -Seconds 4
-        Say '  Chrome started and stopped cleanly.' Green
-    }
+if (-not $SkipTest) {
+    # Chrome on a throwaway profile (no instance, no sign-ins touched): opens headless, loads a page, closes.
+    Say '  Starting Chrome (headless, throwaway profile) to check it works...'
+    $out = & pwsh -NoProfile -Command "`$ErrorActionPreference='Stop'; . '$(Join-Path $root 'browser\Browser-Functions.ps1')'; `$b = Chrome-Start -Hidden `$true -Persist `$false -WorkRoot '$(Join-Path $current 'scripts')'; if (-not `$b) { throw `$script:ChromeStartError }; Chrome-Navigate -Browser `$b -Url 'about:blank' | Out-Null; Chrome-Stop -Browser `$b; 'CHROME-OK'" 2>&1
+    if (($out | Out-String) -notmatch 'CHROME-OK') { throw "Chrome didn't start: $(($out | Select-Object -Last 3) -join ' ')" }
+    Say '  Chrome started and stopped cleanly.' Green
 }
 
 Step 'Ready'
@@ -240,5 +227,5 @@ $first = Get-CWebInstance -Name $(if ('work' -in $names) { 'work' } else { $name
 Say "  Start an instance:  Start-CWeb.cmd   (or: Start-CWeb.cmd <name>)" White
 Say "  Status page:        http://127.0.0.1:$($first.Port)/status   ($($first.Name))" White
 Say "  Settings:           $configPath   (custom ports: see claude.md, Settings)" White
-Say "  Agents connect with: $bashRoot/cweb.sh <client-name> connect   (attaches to the instance you have running)" White
+Say "  Agents use:          $bashRoot/cweb.sh '<json command>'   (starts CWeb when it isn't running)" White
 Say "  Data folder:        $current" White

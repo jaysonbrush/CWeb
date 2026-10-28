@@ -1,7 +1,8 @@
 # CWeb
 
-A shared Chrome browser for Claude agents. You sign in to sites in a CWeb Chrome window; agents work in it through a
-local API, each in its own tab, and only after you've approved them.
+A shared Chrome browser for Claude agents. You sign in to sites in a CWeb Chrome window once; every Claude session and
+script on your machine can then use it with one command. It starts itself, reopens Chrome if it closes, and keeps the
+sites you flag signed in.
 
 Agents: read [`claude.md`](claude.md); it also holds the version history.
 
@@ -18,8 +19,8 @@ Setup downloads the pinned Chrome for Testing, ChromeDriver and Selenium (the ve
 same on every machine), creates the data folder and checks itself. Run it again any time; it only fixes what's
 missing. CWeb runs from any folder (yours, Downloads, anywhere); setup prints the paths for your machine and installs the **cweb** Claude skill with them, so agents find it on their own.
 
-- **Where your data lives:** one folder outside the repo, `%USERPROFILE%\CWebData` (profiles and sign-ins, agent keys,
-  logs, instances you added). `Setup-CWeb.ps1 -DataRoot D:\CWebData` moves it. Never inside the repo, so git can't
+- **Where your data lives:** one folder outside the repo, `%USERPROFILE%\CWebData` (profiles and sign-ins, the API key,
+  keep-alive scripts, logs). `Setup-CWeb.ps1 -DataRoot D:\CWebData` moves it. Never inside the repo, so git can't
   delete or upload it, and not under AppData, which the Claude desktop app redirects.
 - **Remove everything:** `Setup-CWeb.ps1 -Uninstall` lists what CWeb stored; `-Uninstall -Yes` removes it.
 - **New Chrome version:** run `browser\Update-Browser.ps1 -UpdateSelenium` on one machine, test, commit
@@ -30,7 +31,7 @@ missing. CWeb runs from any folder (yours, Downloads, anywhere); setup prints th
 Double-click `Update-CWeb.cmd` in the CWeb folder. It:
 
 1. Checks for a new version. If there's none, it stops nothing and exits.
-2. Lists the running instances and the agents working in them, and **asks before stopping them**: stopping closes
+2. Lists the running instances and **asks before stopping them**: stopping closes
    their Chrome windows (sign-ins and open tabs come back when they restart) and interrupts those agents.
 3. Stops them cleanly, pulls the new version (`git pull --ff-only`: it never overwrites changes you made here),
    runs setup (new Chrome if the pin changed, data moves, self-check), and starts again the instances that were
@@ -48,41 +49,26 @@ Double-click `Update-CWeb.cmd` in the CWeb folder. It:
 
 ## Use it
 
-1. **Start an instance:** double-click `Start-CWeb.cmd` (the `work` instance), or run `Start-CWeb.cmd personal`.
-   A Chrome window titled **CWeb Work** opens. Sign in to the sites you need.
-2. **Open the status page:** http://127.0.0.1:9380/status (each instance has its own port; the page links them, and
-   the launcher prints the address).
-3. **Approve agents:** an agent connects with `cweb.sh <its-name> connect`, which attaches to the instance you
-   have running (if several run, the agent asks you which). Its request shows as a banner on the status page; **Approve** it on the **Access** tab. It keeps working (and reconnecting in later sessions) until you
-   **Revoke** it.
-
-That's all. Agents work in the instance you have running. If none is running (after a reboot, say), an agent's
-`connect` starts `work`. Agents never create or delete instances, never start one while another runs, can't start
-a second server, can't use another instance without a separate approval, and can't change a tab another agent opened.
-
-## The status page
-
-- **Instances:** switch between instances, **Start** a stopped one, **+ New** to create one (its own Chrome profile:
-  you sign in separately). The New panel lists the instances with **Delete** (it asks first, and keeps the profile
-  and sign-ins) and the **leftover profiles** of deleted instances (Restore or Delete).
-- **Tabs:** every tab, who owns it, who's working in it, how long its session has left, and its keep-alive control.
-- **Commands:** what every agent did, and when.
-- **Keep-alive:** turn a site's keep-alive on or off for this instance; see requests and what was renewed.
-- **Access:** approve or deny agents; revoke approved ones.
-- **Stop server:** closes the Chrome window (sign-ins are kept) and stops the server.
+1. **Sign in once:** double-click `Start-CWeb.cmd` (or let any agent start it). A Chrome window titled **CWeb Work**
+   opens. Sign in to the sites you need.
+2. **That's it.** Agents use it with `cweb.sh '<json>'`. If CWeb isn't running, that starts it; if Chrome was closed
+   or crashed, it reopens with your tabs. Nothing to approve or connect.
+3. **Status page:** http://127.0.0.1:9380/status shows the sites kept signed in, the open tabs and what agents did.
 
 ## Staying signed in
 
-To stay signed in to a site, click **Keep alive** on its tab. The next agent that connects is told about it (or ask
-one to *"work the CWeb keep-alive requests"*). It builds a profile for the site and installs it, live at once; switch
-it off on the Keep-alive tab if you don't want it.
+Tell any Claude session *"keep <site> alive"*. It works out how the site's session expires and writes a short script;
+CWeb tests it on the live site, saves it and from then on keeps the site signed in by itself, in its own background
+tab. If a site signs you out anyway, it shows red on the status page: sign in on its tab again.
+
+Keep-alive scripts stay on this machine (never in git). To use one on another machine: **Copy** on this status page,
+**Add** on the other's.
 
 ## Instances
 
-Defaults in `instances.json`: `work` (9380), `personal` (9390), `test` (9399, headless, for testing CWeb). Instances
-you add with **+ New** are kept in the data folder, not the repo, so each machine can have its own without git changes.
-Each instance keeps its profile, logs and keys in `<data folder>\<instance>\`. Sign-ins don't move between machines:
-sign in once on each.
+`work` (9380) is the default. `personal` (9390) is a separate Chrome profile with its own sign-ins, used only when you
+tell an agent to. Each keeps its profile and logs in `<data folder>\<instance>\`. Sign-ins don't move between
+machines: sign in once on each.
 
 ## Settings and ports
 
@@ -91,7 +77,6 @@ sign in once on each.
 ```json
 {
   "portFallback": true,
-  "firstPort": 9380,
   "instances": { "work": { "port": 9480 } }
 }
 ```
@@ -99,15 +84,14 @@ sign in once on each.
 - **Custom port:** add the instance under `instances` with its `port`, then restart it.
 - **Port already in use:** with `portFallback` on (the default), CWeb moves to the next free port and tells you
   (launcher and status page). Agents still find it. Turn it off to have CWeb refuse to start instead.
-- **`firstPort`:** where **+ New** starts looking for a free port.
-
 Details: the **Settings** section of [`claude.md`](claude.md).
 
 ## Security
 
-- Only the local machine can reach CWeb; websites can't drive it or read anything from it.
-- Every agent needs your approval; each gets its own key, stored by CWeb only as a fingerprint. Keys never go into
-  git, docs, chat or logs.
+- Only this machine can reach CWeb, and only programs running as you: the API needs the key in
+  `<data folder>\cweb.key`, which only your Windows user can read. `cweb.sh` passes it on its own; it never appears in
+  commands, output or logs.
+- Websites can't drive CWeb or read anything from it.
 
 ## Files
 

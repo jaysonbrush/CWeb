@@ -1,203 +1,121 @@
 # CWeb: a shared Chrome browser for Claude agents
 
-CWeb is a REST server that drives a real Chrome window. The user signs in to sites in that window; agents navigate,
-read and script there through the API. Many agent sessions share one browser safely: each works in its own tab,
-tabs an agent opens are its own, and nothing gets in without the user approving it on the status page.
+CWeb drives a real Chrome window the user is signed in to. Every Claude session and script on this machine can use it
+with one command: if it isn't running it starts, if Chrome was closed or lost it reopens with its tabs, and the sites
+the user flagged stay signed in on their own. Nothing to connect, approve or babysit.
 
-> **Location:** CWeb runs from any folder. In the examples, `<CWeb>` is that folder (e.g. `C:\Tools\CWeb`) and `$CWEB` the same
-> in Bash form (`/c/Tools/CWeb`). The **cweb** skill that setup installs has the real path; setup also prints it.
-> Agents: put the real path in each command (`/c/Tools/CWeb/cweb.sh ...`); a variable set in one Bash call is gone in the next.
+> **Location:** CWeb runs from any folder. In the examples, `<CWeb>` is that folder (e.g. `C:\Scripts\Modules\CWeb`) and
+> `$CWEB` the same in Bash form (`/c/Scripts/Modules/CWeb`). The **cweb** skill that setup installs has the real path.
+> Agents: put the real path in each command; a variable set in one Bash call is gone in the next.
 
-## Set up on a machine
-
-```powershell
-git clone https://github.com/jaysonbrush/CWeb.git <CWeb>    # any folder
-<CWeb>\Setup-CWeb.cmd          # or: pwsh -File <CWeb>\Setup-CWeb.ps1
-```
-
-`Setup-CWeb.ps1` checks PowerShell 7, installs the **pinned** Chrome for Testing, ChromeDriver and Selenium versions
-from `browser\version.json` (same versions on every machine), unblocks the files, creates the data folder, and checks
-itself (a short headless start of the `test` instance). Safe to run again; it skips what's already right.
-
-- **Upgrading Chrome** is deliberate: on one machine run `browser\Update-Browser.ps1 -UpdateSelenium` (with every
-  instance stopped), test, commit `browser\version.json`. Other machines run `Update-CWeb.cmd`.
-- **Updating CWeb:** `Update-CWeb.cmd` checks for a new version (nothing to do: it stops nothing), lists the running
-  instances and the agents in their tabs, asks before stopping them (`-Yes`: doesn't ask), stops them cleanly,
-  `git pull --ff-only` (refuses if CWeb files were changed locally), runs setup, and starts again the instances that
-  were running. Agents: only when the user asks; it interrupts every client.
-- **Data folder elsewhere:** `Setup-CWeb.ps1 -DataRoot D:\CWebData` (moves existing data; every instance stopped).
-- **Remove:** `Setup-CWeb.ps1 -Uninstall` lists everything CWeb stored on the machine; `-Uninstall -Yes` removes the
-  data folder, the `CWEB_DATA` setting and the downloaded Chrome files. The repo folder itself is left for you.
-- Sign-ins can't be copied between machines (Chrome ties them to the Windows user on that machine): sign in once per
-  machine, per instance.
-
-**Rules:** work in the instance the user has running (when none runs, `connect` starts `work` for you); never create,
-delete or stop an instance or start one by hand, and never edit `instances.json` or `config.json` (those are the user's); never write your own page-refresh loop (the keep-alive
-does that properly); never put a key in a file, message or log.
-
----
-
-## For agents: connect and work (start here)
-
-Pick a **client name** for yourself: lowercase, digits and hyphens, `<team>-<role>`, e.g. `support-ticket-triage`.
-Use the same name every session; that's what lets you reconnect without asking the user again.
+## For agents (start here)
 
 ```bash
-# 1. Connect (once per session; safe to repeat). Attaches to the instance the user has running.
-$CWEB/cweb.sh support-ticket-triage connect
+$CWEB/cweb.sh '{"action":"navigate","tab":"tickets","url":"https://example.org"}'
+$CWEB/cweb.sh '{"action":"getpagetext","tab":"tickets"}'
+cat body.json | $CWEB/cweb.sh -              # long bodies (scripts with quotes) on stdin
+$CWEB/cweb.sh personal '<json>'              # the personal instance, only when the user says so
 ```
 
-The reply names the instance (`"instance":"work"`); use that name in every command after it. When no instance is
-running at all (after a reboot, say), `connect` starts `work` and attaches to it. It never creates an instance, and
-never starts one while another runs.
-
-- `"status":"connected"` (exit 0): go ahead.
-- `"status":"choose"` (exit 6): several instances are running (`instances` lists them). Ask the user which one they
-  work in, then `$CWEB/cweb.sh <that instance> support-ticket-triage connect`. (If you already have a key for exactly
-  one of them, `connect` picks that one by itself.)
-- `"status":"waiting"` (exit 3) with *"is starting"*: `connect` started `work` (or someone else just did) and Chrome
-  is still opening its tabs. Run `connect` again.
-- `"status":"error"` (exit 1) with *"isn't running"*: you named an instance that isn't running (and another one is,
-  or it isn't `work`). Ask the user to start it, or connect without a name.
-- `"status":"waiting"` (exit 3): first time for this name. Tell the user: *"Please approve `support-ticket-triage` on
-  &lt;the `statusUrl` from the reply&gt; (Access tab)."* Then run `connect` again; it keeps the same request (it waits 90 s per
-  call, because tool calls time out). Don't start anything else meanwhile.
-- `"status":"denied"` (exit 4): stop and ask the user.
-
-```bash
-# 2. Work. One JSON command per call; the reply is JSON.
-$CWEB/cweb.sh work support-ticket-triage '{"action":"newtab","name":"tickets","url":"https://example.org"}'
-$CWEB/cweb.sh work support-ticket-triage '{"action":"getpagetext"}'
-# Long bodies (scripts with quotes): send on stdin.
-cat body.json | $CWEB/cweb.sh work support-ticket-triage -
-```
-
-Exit codes: 0 ok (check `success` in the reply), 3 waiting, 4 denied, **5 not connected or key revoked: run
-`connect` again**, 6 several instances running (ask which), 1 other error. Your key is saved in `<data folder>\<instance>\clients\<client>.key` and passed to
-curl privately; you never see or handle it.
+- **Always pass `"tab":"<name>"`**, a name of your own. `navigate` (or `newtab`) with a new name opens that tab; the
+  same name later goes back to it. Without `tab`, a command runs in the current tab (the last one used).
+- The reply is JSON: check `success`. Exit codes: 0 reply received, 3 CWeb is still starting (Chrome reopening its
+  tabs; run the command again), 1 error.
+- Tabs the user opened are named after their site (`listtabs`). Read them; ask before changing them. Leave
+  `keepalive-*` tabs alone: they're CWeb's.
+- "Keep <site> alive": follow **`KEEPALIVE.md`** right then. Never write your own refresh loop.
+- Keep waits short (a few seconds, then retry): commands run one at a time for everyone.
+- Don't stop CWeb, don't edit `instances.json` or `config.json`, and never print or save the key.
 
 From PowerShell scripts:
 
 ```powershell
 . <CWeb>\CWeb-Client.ps1
-$c = Connect-CWeb -Client support-ticket-triage     # status connected|waiting|denied|choose|error; -Instance to pick one
-Invoke-CWeb -Instance $c.instance -Client support-ticket-triage @{ action = 'gettitle' }
+Invoke-CWeb @{ action = 'navigate'; tab = 'tickets'; url = 'https://example.org' }   # -Instance personal for the other one
 ```
 
-**Don't** start `CWeb-Server.ps1`, `Start-CWeb.cmd` or an instance in any other way (`connect` starts `work` when
-nothing runs), and don't use the status page's actions (Start, + New, Delete, Stop server).
+Old forms still work (`cweb.sh <client> connect`, `cweb.sh <instance> <client> '<json>'`, `Connect-CWeb`), so older
+automation keeps running; nothing needs connecting any more.
 
-## Sharing one browser
+## Set up, update, remove
 
-Commands run one at a time across all clients; the server keeps each client's place between them.
+```powershell
+git clone https://github.com/jaysonbrush/CWeb.git <CWeb>    # any folder
+<CWeb>\Setup-CWeb.cmd
+```
 
-- **Your tab.** Every command runs in *your* current tab: the one you opened with `newtab` or chose with
-  `switchtab`. Before your first choice, you get the tab in front unless another client owns it.
-- **`tab` on any command** runs that one command in another tab (`{"action":"gettitle","tab":"mail"}`) without
-  changing your current tab.
-- **Ownership.** A tab you open with `newtab` is yours. Others can **read** it (titles, text, elements, cookies) but
-  can't navigate, click, type, hover, scroll, run scripts, set cookies, handle alerts or close it in your tab: they get
-  *"Tab 'x' belongs to …"*. `releasetab` makes your tab shared again. Tabs the user opens by hand are shared.
-  **Open your own tab for your work**; read the user's tabs with `tab` and ask before changing them.
-- **Iframes.** Your `switchtoframe` position is remembered per tab, for you only, and restored before your next
-  command (also after keep-alive passes). Navigating resets it.
-- **Closed tabs.** If your tab is closed (by you, the user on the status page, or anyone), your next command fails with
-  *"Your tab was closed"*. Run `listtabs`, then `switchtab`. You're never moved silently.
-- **Background tabs run at full speed** (Chrome's background throttling is off), so you can work in a tab that isn't
-  in front. Switching tabs does bring the tab to the front for a moment.
-- **Keep waits short.** A 30 s `waitforelement` holds up every other client for 30 s. Prefer short timeouts and retry.
-- Replies carry `tab` (the tab the command ran in). `listtabs` returns `tabs` (names) and `details`
-  (`name`, `owner`, `mine`, `url`).
+Setup checks PowerShell 7, installs the **pinned** Chrome for Testing, ChromeDriver and Selenium from
+`browser\version.json`, creates the data folder, installs the cweb skill, and checks that Chrome starts. Safe to rerun.
+
+- **Update:** `Update-CWeb.cmd` stops running instances cleanly (asks first; `-Yes` doesn't), pulls, runs setup, and
+  starts them again. Agents: only when the user asks.
+- **Upgrading Chrome** is deliberate: `browser\Update-Browser.ps1 -UpdateSelenium` on one machine (instances stopped),
+  test, commit `browser\version.json`.
+- **Data folder elsewhere:** `Setup-CWeb.ps1 -DataRoot D:\CWebData`. **Remove:** `Setup-CWeb.ps1 -Uninstall [-Yes]`.
+- Sign-ins can't be copied between machines (Chrome ties them to the Windows user): sign in once per machine.
+  Keep-alive scripts can: **Copy** on one machine's status page, **Add** on the other's.
 
 ## Instances
 
-Each instance is a separate browser: its own Chrome profile and sign-ins, port, keys, approvals and status page.
-The defaults are in `instances.json` in this folder (in git, no secrets). Instances a machine adds (**+ New**) go in
-`<data folder>\instances.json`, never the repo's, so they don't show up as git changes. Both lists, and the
-`instances` section of `<data folder>\config.json` (see **Settings**), are merged field by field; a machine's own
-entry wins over a default of the same name.
-
-| Instance | Port | Notes |
+| Instance | Port | |
 |---|---|---|
-| `work` | 9380 | The main instance (default for `Start-CWeb.cmd` and the docs) |
-| `personal` | 9390 | |
-| `test` | 9399 | Headless; for testing CWeb itself |
+| `work` | 9380 | The default: what `cweb.sh` uses unless told otherwise. |
+| `personal` | 9390 | Optional, its own profile and sign-ins. Only when the user asks. |
 
-- The user starts them: `Start-CWeb.cmd <instance>` (default `work`) or the status page's **Start** button. When none
-  runs, an agent's `connect` starts `work`; otherwise it only attaches to a running one.
-- New ones: **+ New** on any status page (next free port from `firstPort`, default 9380).
-- **Delete** (in the **+ New** panel's instance list) asks first, stops the instance if it runs, and takes it off the
-  list. Its folder (profile, sign-ins, keys, logs) stays as a leftover profile, so **Restore** brings it back. A
-  machine-added instance leaves `<data folder>\instances.json`; a default one is marked `"removed": true` in
-  `config.json` (the repo's `instances.json` is never edited). The last instance can't be deleted.
-- A client approved on one instance has no access to another. Connect to each separately.
-- Optional per-instance settings: `label`, `startUrl`, `hidden` (headless), `showServerWindow`, `keepAlive`
-  (`enabled`, `tickSeconds`, `maxCheckSeconds`).
-- `scripts` is reserved (standalone scripts use `<data folder>\scripts`).
-- The ports above are the configured ones. A running server may be on another (see **Settings**); `connect` replies
-  with the real `statusUrl`, and the status page header shows the port.
+Each instance is a separate Chrome profile with its own port and status page. The defaults are in `instances.json`
+(in git, no secrets); `<data folder>\config.json` can override per machine. Optional per-instance settings: `label`,
+`startUrl`, `hidden` (headless), `showServerWindow`, `keepAlive` (`enabled`, `tickSeconds`, `maxCheckSeconds`).
 
 ## Settings
 
-`<data folder>\config.json`: this machine's settings, edited by hand (setup writes the defaults; never in git).
-Changes apply the next time an instance starts.
+`<data folder>\config.json`, edited by hand (never in git), applies on the next start:
 
 ```json
-{
-  "portFallback": true,
-  "firstPort": 9380,
-  "instances": { "work": { "port": 9480 } }
-}
+{ "portFallback": true, "instances": { "work": { "port": 9480 } } }
 ```
 
-| Setting | Default | What |
-|---|---|---|
-| `portFallback` | `true` | If another program holds an instance's port, the server takes the next free port (up to 100 higher) that no instance is configured for, and says so in its log, the launcher and the status page header. `false`: it doesn't start, and the server log says which port is taken. |
-| `firstPort` | `9380` | Where **+ New** starts looking for a free port. |
-| `instances` | `{}` | Per-instance overrides of any instance setting, field by field: a custom `port`, `label`, `hidden`, ... An entry for a name that isn't an instance yet (with a `port`) adds one; `"removed": true` (written by **Delete**) hides one. |
-
-Ports must be unique across instances and between 1024 and 65535. The port a server really listens on is in its
-`<data folder>\<instance>\server.json`; `cweb.sh`, `Connect-CWeb`, the launcher and the status page's switcher read it
-from there, so a moved server is still found.
+`portFallback` (default on): if another program holds the port, the server takes the next free one and records it in
+`<data folder>\<instance>\server.json`, where `cweb.sh`, the client and the launcher find it.
 
 ## Status page
 
-`http://127.0.0.1:<port>/status` (no key; this machine only). Point the user there instead of pasting status into chat.
-Refreshes every 2 seconds.
+`http://127.0.0.1:<port>/status` (this machine only). Point the user there instead of pasting status into chat.
 
-- **Header:** instance switcher (running instances link to their page, stopped ones have **Start**, **+ New** creates
-  one and shows the instance list with **Delete** and the leftover profiles), **Stop server** (closes Chrome cleanly,
-  keeps logins). The page's actions only work from the page itself (they need its `Origin`).
-- **Tabs:** open a tab; every tab with its owner ("owned by"), who's in it ("in use by"), its keep-alive control,
-  session time left, and **Close**.
-- **Commands:** the last 200 commands with client, tab, target, time and result; counts by client and action. Never
-  typed text, scripts or cookie values.
-- **Keep-alive:** requests, site profiles with per-instance On/Off, renewals and warnings (and drafts left from
-  before 2026.10.26.018, to enable or discard).
-- **Access:** requests waiting for approval (**Approve** / **Deny**; a banner shows on every tab while anyone waits)
-  and approved clients with last use and **Revoke**.
+- **Keep-alive:** each site with its state (signed in / signed out / error), time left, last renewal; **Copy**,
+  **Remove**; **Add** (paste a script); renewals and warnings.
+- **Tabs:** open a tab (in the background), every tab with **Close**.
+- **Commands:** the last 200 commands (client, action, tab, target, time, result). Never typed text or script bodies.
+- Header: instances (**Start** a stopped one), **Stop server**, and **Open Chrome** when it's closed.
+
+## Keep-alive
+
+Each flagged site has a script in `<data folder>\keepalive\<site>.js` (shared by all instances, never in git) and its
+own tab, `keepalive-<site>`, which CWeb opens in the background from the script's `@url`. Between API requests CWeb
+runs the script's `probe()` there over DevTools (no tab is switched to), and `renew()` when the session is running low.
+Signed out: the status page shows it red; the user signs in on that tab and it's kept from then on. If Chrome was
+closed, the next check reopens it.
+
+Adding a site (`keepalive` `op: add`, or **Add** on the status page) tests it on the live site and saves it only if it
+works. How to write one: **`KEEPALIVE.md`**.
 
 ## API
 
-`POST http://127.0.0.1:<port>/api`, header `X-API-Key: <client key>`, JSON body with `action`. Use `cweb.sh` /
-`Invoke-CWeb` rather than building requests by hand. Every action except the browser/tab ones below takes `tab`.
+`POST http://127.0.0.1:<port>/api`, header `X-CWeb-Key: <key>` (optional `X-CWeb-Client: <name>` for the command
+list), JSON body with `action`. Use `cweb.sh` / `Invoke-CWeb` rather than building requests by hand. Any action takes
+`tab`.
 
 | Group | Action | Parameters | Notes |
 |---|---|---|---|
-| Browser | `start` | `hidden`, `persist` (default true), `stealth` (default true) | The server opens Chrome itself on launch; only needed after `stop`. Always the instance's profile. |
-| | `stop` | | Closes Chrome for everyone. Ask the user first. |
-| | `status` | | Version, browser state, your tab's URL and title. |
-| Navigation | `navigate` | `url` | Waits for the load. |
+| Navigation | `navigate` | `url` | Waits for the load. A new `tab` name opens that tab. |
 | | `back` / `forward` / `refresh` | | |
 | Page | `gettitle` / `geturl` / `getpagesource` | | |
 | | `getpagetext` | `by`, `value` (optional) | Visible text of the page or an element. |
 | | `screenshot` | `filePath` | |
 | | `getalllinks` / `getallforms` | | |
-| Tabs | `newtab` | `url`, `name` (optional) | You own it; it becomes your tab. Unnamed tabs are named after their site. |
-| | `switchtab` | `name` | Changes your current tab. |
-| | `closetab` | | Closes your tab (or `tab`), if you may write to it. |
-| | `listtabs` | | `tabs` + `details`. Names any tab seen for the first time. |
-| | `releasetab` | `tab` (optional) | Makes your tab shared. |
+| Tabs | `newtab` | `name`, `url` | Opens it (or goes to it, if that name is open). Unnamed tabs are named after their site. |
+| | `switchtab` | `name` | Makes it the current tab. |
+| | `closetab` | | Closes `tab` (or the current one). |
+| | `listtabs` | | `tabs` (names) and `details` (`name`, `title`, `url`, `keepAlive`). |
 | Elements | `findelement` / `findelements` | `by`, `value` | |
 | | `click` | `by`, `value`, `timeout` (default 5) | Scrolls into view, retries while covered or not ready. |
 | | `sendkeys` | `by`, `value`, `text`, `clear` | |
@@ -205,180 +123,84 @@ Refreshes every 2 seconds.
 | | `hover` | `by`, `value` | |
 | | `selectoption` | `by`, `value`, `selectBy` (Text/Value/Index), `option` | Fires `input` + `change`. |
 | | `scroll` | `direction` (Up/Down/Top/Bottom/ToElement), `pixels`, `by`, `value` | |
-| Frames | `switchtoframe` | `frameId` / `frameName` / `frameIndex` / `default: true` | Remembered per tab, per client. |
+| Frames | `switchtoframe` | `frameId` / `frameName` / `frameIndex` / `default: true` | Remembered per tab. |
 | Waiting | `wait` | `timeout` (30) | Page load. |
-| | `waitforelement` | `by`, `value`, `timeout` (30), `visible` | Keep short (see above). |
+| | `waitforelement` | `by`, `value`, `timeout` (30), `visible` | Keep short. |
 | | `waitforurl` | `contains` / `matches` / `changed`, `timeout` | |
 | Script | `executescript` | `script`, `arguments` | `return` a value; it comes back in `result`. |
 | Alerts | `acceptalert` (`promptText`) / `dismissalert` / `getalerttext` | | |
 | Cookies | `getcookies` (`name`) / `setcookie` (`name`, `value`, `domain`, `path`) / `deletecookie` (`name`) | | |
 | Window | `getwindowsize` / `setwindowsize` (`width`, `height`) / `maximize` | | Affects everyone's window. |
-| Keep-alive | `keepalive` | `op`: `status` / `on` / `off` / `check` / `requests` / `install` / `decline` | See **Session keep-alive**. |
+| Keep-alive | `keepalive` | `op`: `status` (default) / `add` (`source`) / `remove` (`site`) / `check` | See **Keep-alive**. |
+| Browser | `status` | | Version, browser state. (`start` / `stop` exist; don't use them: Chrome opens by itself.) |
 
 Locators (`by`): `Id`, `Name`, `ClassName`, `TagName`, `CssSelector`, `XPath`, `LinkText`, `PartialLinkText`.
 
-**Escaping:** for anything with quotes (scripts), build the body in a file or in PowerShell (`ConvertTo-Json`) and
-send it on stdin (`cweb.sh … -`) or with `Invoke-CWeb`. Don't fight shell quoting inline.
+## Security
 
-## Tab names
-
-`switchtab` and `tab` take names. Tabs the user opens, that Chrome restores, or that are opened without a name are named
-after their site (`portal.example.org` → `example`; repeats get `-2`, `-3`), on the keep-alive's 30-second pass or
-at once on `listtabs`. A name is kept even if the tab navigates elsewhere. When the user says "I opened a tab", run
-`listtabs` and check `status` with `tab` to confirm it's the page they mean.
-
-## Session keep-alive
-
-The server keeps the user signed in on every tab whose site has a profile in `<data folder>\keepalive\`, so
-sessions don't time out while you work elsewhere. On by default; nothing to start.
-
-- It runs **between** API requests, never during one. Each profile's `probe()` reads the real time left without
-  changing anything; only when it's under `@renewBelow` does `renew()` extend the session the site's own way. It
-  never reloads a page, so form input and dialogs survive.
-- Each tab is checked shortly before it needs renewing, and at least every 10 minutes. Your own activity on a site
-  counts; the next probe sees it.
-- Checks run over Chrome's DevTools connection: no tab is switched to or brought to the front, and your tab and
-  iframe stay as they are. Agents only wait while a check actually runs.
-- Signed-out tabs are reported once (status page, server log).
-- **Per instance on/off:** the user can switch a site off for one instance on the status page; its tabs are then
-  recognised but never probed or renewed.
-
-Each machine builds its own profiles: the user clicks **Keep alive** on a tab, which files a request. You hear about
-it without being told: the `connect` reply lists open requests (`keepAliveRequests`), and any reply can carry a
-`keepAliveTask` (one request, handed to one client at a time). **Handle it right away, without asking the user.** Follow **`KEEPALIVE.md`**: find how the site's session expires, write the profile and install
-it (`keepalive` `op: install`). The server runs `probe()` once on an open tab of the site and, if that works, the
-profile is **live at once** (the user can switch it off on the status page). If there's no way, `op: decline` with a
-note. Don't write profile files yourself.
-
-Profile format, for reference:
-
-```js
-// @name        Example Portal
-// @match       ^https://[^/]+\.example\.org/
-// @renewBelow  300
-// How this site's session expires and why renew() works (keep it short).
-var site = {
-    probe: function () { /* read only: { loggedOut: true } or { loggedOut: false, remaining: <seconds> } */ },
-    renew: function () { /* extend without reloading; return a short description */ }
-};
-```
-
-`@match` names the vendor's domain pattern, never a customer's host, and also matches the signed-out page. No
-credentials, no customer data.
-
-## Access and security
-
-- Nothing can use an instance's API without a key from the user's **Approve**. Keys are per client, random, handed out
-  once, and stored by the server only as SHA-256 fingerprints (`approvals.json`). An approval lasts until **Revoke**,
-  across restarts. All sessions of one client share its key file, so one approval covers them; a session that does
-  ask again (and is approved) gets an extra key, and the client's other keys keep working (up to 10 per client).
-  **Revoke** ends all of them.
-- `POST /attach {client}` asks (needs header `X-CWeb-Attach: 1` and no `Origin`); `GET /attach/<ticket>` waits and
-  collects the key once. Requests expire after an hour. `connect` does all this for you.
-- Everything answers only on `127.0.0.1`. The API sends no CORS headers; the status page's actions need its own
-  header and origin, so no website can drive the browser, approve anything or read a key.
-- Known limit: any program running under the user's Windows login can read the saved key files or press Approve, the
-  same exposure the status page has. Keys stay out of git, docs, chat and logs.
+- Everything listens on `127.0.0.1` only.
+- The API needs this machine's key, `<data folder>\cweb.key`: random, made on first use, readable only by the Windows
+  user who runs CWeb. `cweb.sh` and `CWeb-Client.ps1` read it and pass it on stdin / in a header, so it never shows on
+  a command line, in output or in a log. Other Windows users on the machine can't use CWeb.
+- Web pages can't reach it: the API needs a custom header (a CORS preflight, never approved) and refuses requests with
+  an `Origin`; the status page sends no CORS headers and its actions need their own header.
+- Known limit: any program running as the user can use CWeb, by design (the user's own sessions and scripts).
 
 ## Starting, stopping, restarting
 
-- **Start:** `Start-CWeb.cmd <instance>` or the status page's **Start** button. Safe to
-  repeat: one server per instance (a named lock); a second one exits. If the server runs but doesn't answer, the
-  launcher waits a minute, then offers to restart it (Chrome closed cleanly first). If its Chrome was closed (window
-  closed, or it exited), the server keeps running and the launcher or the status page's **Open Chrome** reopens it;
-  until then API calls answer "No browser running".
-- **Stop:** the status page's **Stop server** (closes Chrome cleanly, logins kept). From a script:
-  `curl -s -X POST http://127.0.0.1:<port>/status/stopserver -H "X-Status-Request: 1" -H "Origin: http://127.0.0.1:<port>" -d '{}'`.
-  Only when the user asks: it stops the browser for every client.
-- **Restart** after changing server code: stop, then start. Chrome may restore its tabs; they're auto-named, so run
-  `listtabs` before opening duplicates. Keep-alive profiles and `status.html` are re-read live and need no restart.
-  Approvals survive; clients' current tabs and ownership don't (handles change), so clients `switchtab` again.
+- **Start:** nothing to do: the first command starts it. By hand: `Start-CWeb.cmd [instance]` (if the server runs but
+  doesn't answer, it offers to restart it, Chrome closed cleanly first).
+- **Chrome closed, crashed or disconnected:** the next command (or keep-alive check) closes what's left cleanly and
+  reopens Chrome with its tabs and sign-ins. One failed start isn't retried for a minute.
+- **Stop:** the status page's **Stop server** (Chrome closes cleanly, sign-ins kept). Only when the user asks.
+- **Restart** after changing server code: stop, then any command. Tabs come back and are re-named after their site, so
+  agents open their named tabs again with `navigate`.
 
 ## Files and data
 
-In this folder (the repo):
-
-| Path | What |
+| Path (repo) | What |
 |---|---|
-| `CWeb-Server.ps1` | The server: API, status page, keep-alive, tab sharing |
-| `CWeb-Common.ps1` | Instance lookup, start helpers, `New-CWebInstance` (shared by server, launcher, client) |
-| `CWeb-Access.ps1` | Attach, approve/deny/revoke, keys |
-| `CWeb-KeepAliveAdmin.ps1` | Per-site on/off, keep-alive requests, installing profiles |
-| `CWeb-Profiles.ps1` | Leftover profiles |
-| `CWeb-Client.ps1`, `cweb.sh` | How agents and scripts connect |
-| `Setup-CWeb.cmd`, `Setup-CWeb.ps1` | Setup on a machine (pinned Chrome/ChromeDriver/Selenium, data folder, self-check); `-DataRoot`, `-Uninstall` |
-| `Update-CWeb.cmd`, `Update-CWeb.ps1` | Update: asks, stops running instances cleanly, pulls, runs setup, restarts them; `-Yes` |
-| `Start-CWeb.cmd`, `Start-CWeb.ps1` | Launcher |
-| `Test-CWeb.ps1` | Checks the files and the instance lists; changes nothing |
-| `instances.json` | The default instances (no secrets); a machine's own are in the data folder |
-| `status.html` | The status page |
-| `KEEPALIVE.md` | How agents work keep-alive requests and write site profiles |
-| `browser\` | Core browser module: `Browser-Functions.ps1`, `Update-Browser.ps1`; Chrome for Testing, ChromeDriver, Selenium (not in git; see `browser\CLAUDE.md`) |
-| `skills\cweb\SKILL.md` | Claude skill for agents using CWeb, as a template: setup installs it into `%USERPROFILE%\.claude\skills\cweb\` with `{{CWEB}}` / `{{CWEB_WIN}}` replaced by this folder's path (again on every setup or update, so it follows the folder if it moves) |
-| `VERSION` | The version (history at the end of this file) |
+| `CWeb-Server.ps1` | The server: API, tabs, status page |
+| `CWeb-KeepAlive.ps1` | Keep-alive: site scripts, their tabs, checks, add/remove |
+| `CWeb-DevTools.ps1` | Reads tabs, runs scripts, opens/closes background tabs over Chrome's DevTools |
+| `CWeb-Common.ps1` | Instances, data folder, key, start/stop helpers |
+| `CWeb-Client.ps1`, `cweb.sh` | How scripts and agents use it (start it if needed, send the key) |
+| `Setup-CWeb.*`, `Update-CWeb.*`, `Start-CWeb.*`, `Test-CWeb.ps1` | Setup, update, launcher, file check |
+| `instances.json`, `status.html`, `KEEPALIVE.md` | Default instances, status page, how to write a keep-alive script |
+| `browser\` | Core browser module (`Browser-Functions.ps1`, `Update-Browser.ps1`); Chrome, ChromeDriver, Selenium (not in git) |
+| `skills\cweb\SKILL.md` | Template of the cweb skill; setup installs it with this folder's path filled in |
+| `VERSION` | The version (history below) |
 
-Everything CWeb stores on a machine is in **one data folder outside the repo**: `%USERPROFILE%\CWebData`, or the folder
-in the user environment variable `CWEB_DATA` (set with `Setup-CWeb.ps1 -DataRoot`; read from the registry each time,
-so a change applies at once). It's never inside the repo, so `git clean`, a re-clone or a synced folder can't lose or
-leak sign-ins and keys. The status page header shows it.
+Everything CWeb stores is in **one data folder outside the repo**: `%USERPROFILE%\CWebData`, or the folder in the
+user environment variable `CWEB_DATA`. Not under AppData on purpose: the Claude desktop app (MSIX) redirects AppData,
+so agents and the server would see different folders.
 
-It's deliberately **not under AppData**: packaged (MSIX) apps such as the Claude desktop app redirect AppData writes
-into a private copy, so agents started from the app and a server started from Explorer would see different folders
-(the agents wouldn't find the server or their keys). Installs from before 2026.10.26.015 used `%LOCALAPPDATA%\CWeb`;
-CWeb keeps using it while `%USERPROFILE%\CWebData` doesn't exist, and running `Setup-CWeb.cmd` moves it (stop every
-instance first; a `CWEB_DATA` folder you chose is left alone).
-
-In it:
-
-- `config.json`: this machine's settings (port fallback, `firstPort`, per-instance overrides such as a custom port).
-- `instances.json`: instances this machine added.
-- `keepalive\`: this machine's site profiles; `replaced\` (profiles an install replaced); `drafts\` (only from
-  before 2026.10.26.018).
-- `_deleted\`: deleted leftover profiles, kept 30 days.
-- `scripts\`: profiles of standalone scripts using `browser\Browser-Functions.ps1`.
-- One folder per instance, `<data folder>\<instance>\`:
-
-| Path | What |
-|---|---|
-| `profile\` | The Chrome profile (sign-ins). `profile.bak-<time>` after an import. |
-| `server.json` | "Here I am": port, process ID, version, start time. No key. |
-| `approvals.json` | Approved clients: fingerprints only. |
-| `clients\<client>.key` | Keys saved by `connect` (`.ticket` while waiting). |
-| `keepalive-sites.json`, `keepalive-requests.json` | Sites switched off here; keep-alive requests. |
-| `logs\` | `server-<date>.log` (one line per command: `[time] client action [tab] target ms`), `chromedriver-<date>-<time>.log` (one per start, warnings and errors only), `launcher-<date>.log`, `import-*.log`. Kept 7 days. |
-
-CWeb writes nothing outside the data folder and the repo's `browser\` downloads.
+- `cweb.key` (the API key), `config.json`, `instances.json` (instances this machine added), `keepalive\` (site scripts),
+  `scripts\` (profiles of standalone scripts).
+- Per instance, `<data folder>\<instance>\`: `profile\` (Chrome profile, sign-ins), `server.json` (port, process ID,
+  version; no key), `logs\` (`server-<date>.log`, one `chromedriver-<date>-<time>.log` per start, `launcher-<date>.log`;
+  kept 7 days).
 
 ## Chrome details
 
-- **Profile self-repair** (before each start): ends leftover automation Chrome holding *exactly* this profile (never
-  another tool's or the user's own Chrome); a profile written by a newer Chrome than the bundled one is set aside
-  (`.bak-chrome<ver>-<time>`); if Chrome still crashes, the profile is set aside once and restored if a fresh one
-  crashes too. Backups older than 30 days are removed.
-- **Fingerprint:** `navigator.webdriver` is false and there's no "controlled by automated software" banner; `stealth`
-  (default on) patches a few more tells. No CAPTCHA solving: the user handles those.
-- **Window title:** `CWeb <label>`, so instances are easy to tell apart.
-- **Network drive:** run from a mapped/UNC path, Chrome starts with `--no-sandbox` (it crashes otherwise).
-- **Another machine:** clone to any folder and run `Setup-CWeb.cmd` (see **Set up on a machine**).
-  Chrome, ChromeDriver and Selenium aren't in git; setup downloads the pinned versions and unblocks the files.
+- **Profile self-repair** before each start: ends leftover automation Chrome on *exactly* this profile (never the
+  user's own Chrome); a profile from a newer Chrome is set aside; a crashing profile is set aside once.
+- **Fingerprint:** `navigator.webdriver` is false, no "controlled by automated software" banner. No CAPTCHA solving.
+- **Window title:** `CWeb <label>`. **Network drive:** Chrome starts with `--no-sandbox`.
 
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| `cweb.sh` exit 5 | Not connected, or the key was revoked/replaced: run `connect`. |
-| `connect`: "is starting" (exit 3) | Chrome is still opening `work`'s tabs: run `connect` again. |
-| `connect`: "isn't running" | The named instance isn't running (another is, or it isn't `work`): ask the user to start it, or connect without a name. |
-| `connect` exit 6, `choose` | Several instances run: ask the user which, then `cweb.sh <instance> <client> connect`. |
-| `connect` keeps saying waiting | The user hasn't approved yet; remind them of the Access tab. Requests expire after an hour; `connect` asks again. |
-| "Tab 'x' belongs to …" | Open your own tab with `newtab`, or ask the owner/the user. |
-| "Your tab was closed" | `listtabs`, then `switchtab`. |
-| "No tab named 'x'" | `listtabs`; a tab still on Chrome's new-tab page has no name until it loads a site. |
-| Server didn't start | `<data folder>\<instance>\logs\server-<date>.log` and that start's `chromedriver-<date>-<time>.log`. Chrome's start error is also on the status page. |
+| Exit 3, "is starting" | Chrome is reopening its tabs: run the command again. |
+| "No tab named 'x'" | Open it with `navigate` (`tab` + `url`), or `listtabs`. |
+| "Chrome didn't start: ..." | `<data folder>\<instance>\logs\server-<date>.log` and that start's ChromeDriver log; the status page shows the error. |
+| 401 Unauthorized | Something other than `cweb.sh` / `Invoke-CWeb` sent the request without the key. |
+| Keep-alive site "signed out" | Sign in on its `keepalive-<site>` tab in the CWeb window. |
+| Keep-alive site "error" | The script fails on the site now (the site changed): ask an agent to fix it (`KEEPALIVE.md`) and add it again. |
 | "Chrome module not found" / Chrome missing | Run `Setup-CWeb.cmd`. |
-| Commands are slow | Another client is in a long wait; commands run one at a time. |
-| Status page "isn't running" | Start the instance; reload. If its port was taken, it may be on another: the launcher prints the address. |
-| "Port … is in use by another program" (server log) | Give the instance another `port` in `<data folder>\config.json`, or set `portFallback` to `true`. |
+| Commands are slow | Another session is in a long wait; commands run one at a time. |
+| "Port … is in use by another program" | Give the instance another `port` in `config.json`, or turn `portFallback` on. |
 
 ## CWeb versions
 
@@ -386,6 +208,7 @@ CWeb writes nothing outside the data folder and the repo's `browser\` downloads.
 
 | Version | Changes |
 |---|---|
+| 2026.10.28.025 | **Simpler, and it runs itself.** No `connect`, client names, keys to approve, tab ownership or Origin rules: `cweb.sh '<json>'` uses `work`, starts it if it isn't running, and sends this machine's key (`<data folder>\cweb.key`, readable only by the user) on its own. If Chrome is closed, crashes or loses ChromeDriver, the next command reopens it with its tabs. Commands take `tab`; `navigate` with a new name opens that tab. Keep-alive runs without agents: each site's script (`@url` added) gets its own background tab that CWeb checks and renews; the agent the user asks writes the script and `op: add` tests it live before saving. Status page: keep-alive sites with Copy / Add / Remove, tabs, commands; the Access tab, requests, drafts and per-instance on/off are gone. The `test` instance, + New / Delete instances and leftover profiles are gone; setup checks Chrome on a throwaway profile instead. Old `connect` forms still work, and clients from older versions (their own copy of `CWeb-Client.ps1` or `cweb.sh`) get this machine's key automatically through the old `/attach` handshake, with nothing to approve. |
 | 2026.10.28.024 | When no instance is running (after a reboot, say), an agent's `connect` starts `work` and attaches to it, instead of asking the user. It still never creates an instance and never starts one while another runs; one agent starts it at a time. While Chrome opens its tabs `connect` replies `waiting` (exit 3) "is starting": run it again. |
 | 2026.10.28.023 | A closed Chrome no longer breaks the server. Before, once Chrome's window was closed or Chrome exited, every status request failed ("array index evaluated to null"), so the launcher thought the server was down, started a second one that exited at once, and waited 2 minutes. Now the server notices, the status page says so and has **Open Chrome**, and `Start-CWeb` reopens it. `Start-CWeb` also offers to restart a server that runs but doesn't answer (Chrome closed cleanly first), stops waiting at once if a new server exits, and waits up to 6 minutes for Chrome to restore many tabs. `Update-CWeb` stops a server that isn't answering too. Chrome writes only errors to the ChromeDriver log, and the startup file check no longer fills the server log with `Zone.Identifier` errors. |
 | 2026.10.27.022 | ChromeDriver logs warnings and errors only. Every version before logged every command and reply in full (about 1 GB a day per instance); those day files (`chromedriver-<date>.log`) are deleted on the next start. ChromeDriver logs are kept 7 days like the other logs. |

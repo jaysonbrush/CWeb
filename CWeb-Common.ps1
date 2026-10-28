@@ -35,6 +35,23 @@ function Get-CWebDataRoot {
     return $v.TrimEnd('\')
 }
 
+function Get-CWebKeyFile { Join-Path (Get-CWebDataRoot) 'cweb.key' }
+
+function Initialize-CWebKey {
+    # This machine's API key: <data folder>\cweb.key, made on first use and readable by this Windows user only. Every
+    # instance uses it. Returns the key.
+    $path = Get-CWebKeyFile
+    if (-not (Test-Path $path)) {
+        New-Item -ItemType Directory -Path (Split-Path $path) -Force | Out-Null
+        $bytes = [byte[]]::new(32); [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+        $tmp = "$path.$PID.tmp"
+        Set-Content -LiteralPath $tmp -Value (-join ($bytes | ForEach-Object { $_.ToString('x2') })) -NoNewline -Encoding ascii
+        & icacls.exe $tmp /inheritance:r /grant:r "$($env:USERDOMAIN)\$($env:USERNAME):(F)" | Out-Null
+        try { Move-Item -LiteralPath $tmp -Destination $path -ErrorAction Stop } catch { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }   # another process made it first
+    }
+    return (Get-Content -LiteralPath $path -Raw).Trim()
+}
+
 function Get-CWebConfig {
     # This machine's settings (<data folder>\config.json) with the defaults filled in.
     $path = Join-Path (Get-CWebDataRoot) 'config.json'
