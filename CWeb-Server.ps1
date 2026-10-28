@@ -633,15 +633,24 @@ function Get-TabHandleByName {
 # The server names them after their site: the label before the top-level domain ("example" for
 # portal.example.org), with -2, -3... for repeats. A name is kept once given, even if the tab navigates.
 # Tabs on chrome:// or about: pages wait until they load a website.
-function Register-UnnamedTab {
-    param([string]$Handle, [string]$Url)
-    if ($script:Browser.Tabs.Values -contains $Handle) { return }
+function Get-SiteTabName {
+    # A site's tab name: the label before the top-level domain ("example" for portal.example.org), or $null for a page
+    # that isn't a website.
+    param([string]$Url)
     $u = $null
-    if (-not [Uri]::TryCreate($Url, [UriKind]::Absolute, [ref]$u) -or $u.Scheme -notin @('http', 'https')) { return }
+    if (-not [Uri]::TryCreate($Url, [UriKind]::Absolute, [ref]$u) -or $u.Scheme -notin @('http', 'https')) { return $null }
     $labels = $u.Host -split '\.'
     $base = if ($u.HostNameType -ne 'Dns') { 'ip' } elseif ($labels.Count -ge 2) { $labels[-2] } else { $labels[0] }
     $base = ($base -replace '[^a-zA-Z0-9-]', '').ToLower()
     if (-not $base) { $base = 'tab' }
+    return $base
+}
+
+function Register-UnnamedTab {
+    param([string]$Handle, [string]$Url)
+    if ($script:Browser.Tabs.Values -contains $Handle) { return }
+    $base = Get-SiteTabName $Url
+    if (-not $base) { return }
     $name = $base; $i = 2
     while ($script:Browser.Tabs.ContainsKey($name)) { $name = "$base-$i"; $i++ }
     $script:Browser.Tabs[$name] = $Handle
@@ -706,6 +715,8 @@ function Invoke-TabAction {
     try {
         $name = if ($action -in 'newtab', 'switchtab') { [string]$Body.name } else { [string]$Body.tab }
         if ($action -eq 'newtab' -and -not $name) { $name = [string]$Body.tab }
+        # navigate without tab: the site's own tab (one per site, named after it), opened if there's none yet.
+        if ($action -eq 'navigate' -and -not $name) { $name = Get-SiteTabName ([string]$Body.url) }
         $h = if ($name) { Get-TabHandleByName $name } else { $null }
 
         switch ($action) {

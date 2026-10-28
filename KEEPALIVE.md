@@ -5,8 +5,8 @@ needed again. `$CWEB` is the CWeb folder in Bash form (the **cweb** skill has th
 
 ## 1. Find how the session expires
 
-Open the site in a tab of your own (`{"action":"navigate","tab":"ka-work","url":"https://app.example.com/"}`); the
-user is already signed in there. With `executescript` in that tab, look for: a countdown or "session expires" element,
+Open the site (`{"action":"navigate","url":"https://app.example.com/"}`, which goes to its tab); the user is
+already signed in there. With `executescript` in that tab, look for: a countdown or "session expires" element,
 an idle timer in the page's scripts (`timeout`, `idle`, `expire`, `logout`), a token with an expiry in `localStorage` /
 `sessionStorage` (a JWT's `exp`), or a keep-alive endpoint the page calls (`performance.getEntriesByType('resource')`).
 No timer at all: renew on a cadence (a light signed-in request every few hours) and track it in `localStorage`.

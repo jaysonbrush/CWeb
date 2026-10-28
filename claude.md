@@ -11,14 +11,16 @@ the user flagged stay signed in on their own. Nothing to connect, approve or bab
 ## For agents (start here)
 
 ```bash
-$CWEB/cweb.sh '{"action":"navigate","tab":"tickets","url":"https://example.org"}'
-$CWEB/cweb.sh '{"action":"getpagetext","tab":"tickets"}'
+$CWEB/cweb.sh '{"action":"navigate","url":"https://portal.example.org/tickets"}'   # reply: "tab":"example"
+$CWEB/cweb.sh '{"action":"getpagetext","tab":"example"}'
 cat body.json | $CWEB/cweb.sh -              # long bodies (scripts with quotes) on stdin
 $CWEB/cweb.sh personal '<json>'              # the personal instance, only when the user says so
 ```
 
-- **Always pass `"tab":"<name>"`**, a name of your own. `navigate` (or `newtab`) with a new name opens that tab; the
-  same name later goes back to it. Without `tab`, a command runs in the current tab (the last one used).
+- **One tab per site.** `navigate` without `tab` goes to the site's tab, named after the site (`example` for
+  portal.example.org; `linkedin`, `x`), and opens it only if there's none. Pass that name as `"tab"` on every command
+  after it: without `tab` a command runs in the current tab, which another session may have moved. Sessions share a
+  site's tab. Only for a second page on the same site at once, pass your own `"tab":"<name>"` on `navigate`.
 - The reply is JSON: check `success`. Exit codes: 0 reply received, 3 CWeb is still starting (Chrome reopening its
   tabs; run the command again), 1 error.
 - Tabs the user opened are named after their site (`listtabs`). Read them; ask before changing them. Leave
@@ -31,7 +33,7 @@ From PowerShell scripts:
 
 ```powershell
 . <CWeb>\CWeb-Client.ps1
-Invoke-CWeb @{ action = 'navigate'; tab = 'tickets'; url = 'https://example.org' }   # -Instance personal for the other one
+Invoke-CWeb @{ action = 'navigate'; url = 'https://portal.example.org/tickets' }   # -Instance personal for the other one
 ```
 
 Old forms still work (`cweb.sh <client> connect`, `cweb.sh <instance> <client> '<json>'`, `Connect-CWeb`), so older
@@ -106,7 +108,7 @@ list), JSON body with `action`. Use `cweb.sh` / `Invoke-CWeb` rather than buildi
 
 | Group | Action | Parameters | Notes |
 |---|---|---|---|
-| Navigation | `navigate` | `url` | Waits for the load. A new `tab` name opens that tab. |
+| Navigation | `navigate` | `url` | Waits for the load. Without `tab`: the site's tab (opened if none). A new `tab` name opens that tab. |
 | | `back` / `forward` / `refresh` | | |
 | Page | `gettitle` / `geturl` / `getpagesource` | | |
 | | `getpagetext` | `by`, `value` (optional) | Visible text of the page or an element. |
@@ -208,6 +210,7 @@ so agents and the server would see different folders.
 
 | Version | Changes |
 |---|---|
+| 2026.10.28.028 | One tab per site: `navigate` without `tab` goes to the site's tab (named after the site) and opens one only if there's none, so sessions share it instead of each opening their own. |
 | 2026.10.28.027 | The server log notes refused API requests (no key) and old-style `/attach` handshakes, so a client that can't get in is visible. |
 | 2026.10.28.026 | Keep-alive tabs survive restarts: each is marked (sessionStorage) and found again when Chrome restores it, instead of CWeb opening a second one every restart. |
 | 2026.10.28.025 | **Simpler, and it runs itself.** No `connect`, client names, keys to approve, tab ownership or Origin rules: `cweb.sh '<json>'` uses `work`, starts it if it isn't running, and sends this machine's key (`<data folder>\cweb.key`, readable only by the user) on its own. If Chrome is closed, crashes or loses ChromeDriver, the next command reopens it with its tabs. Commands take `tab`; `navigate` with a new name opens that tab. Keep-alive runs without agents: each site's script (`@url` added) gets its own background tab that CWeb checks and renews; the agent the user asks writes the script and `op: add` tests it live before saving. Status page: keep-alive sites with Copy / Add / Remove, tabs, commands; the Access tab, requests, drafts and per-instance on/off are gone. The `test` instance, + New / Delete instances and leftover profiles are gone; setup checks Chrome on a throwaway profile instead. Old `connect` forms still work, and clients from older versions (their own copy of `CWeb-Client.ps1` or `cweb.sh`) get this machine's key automatically through the old `/attach` handshake, with nothing to approve. |

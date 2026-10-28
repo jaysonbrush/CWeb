@@ -15,20 +15,22 @@ running, it starts it first. Nothing to connect or approve.
 
 ```bash
 cweb={{CWEB}}/cweb.sh
-$cweb '{"action":"navigate","tab":"tickets","url":"https://example.org"}'
-$cweb '{"action":"getpagetext","tab":"tickets"}'
-$cweb '{"action":"click","tab":"tickets","by":"CssSelector","value":"button[type=submit]"}'
+$cweb '{"action":"navigate","url":"https://portal.example.org/tickets"}'     # reply: "tab":"example"
+$cweb '{"action":"getpagetext","tab":"example"}'
+$cweb '{"action":"click","tab":"example","by":"CssSelector","value":"button[type=submit]"}'
 ```
 
-- **Always pass `"tab":"<name>"`**, a name of your own for your work. `navigate` with a new name opens that tab.
-  `listtabs` shows every tab; tabs the user opened are named after their site. Read them; ask before changing them.
-  Leave `keepalive-*` tabs alone.
+- **One tab per site.** `navigate` without `tab` goes to that site's tab (named after the site: `example` for
+  portal.example.org, `linkedin`, `x`), opening it only if there's none. Then pass that name as `"tab"` on every
+  command after it. Don't open extra tabs for a site; sessions share its tab and pick up where the last one left it.
+- `listtabs` shows every tab. Leave `keepalive-*` tabs alone. Need a second page on the same site at the same time (rare)?
+  Pass your own `"tab":"<name>"` on `navigate`.
 - The reply is JSON; check `success`. Exit 3 = CWeb is still starting (Chrome reopening its tabs): run it again.
 - Default instance is `work`. Use `$cweb personal '<json>'` only when the user says so.
 - Long scripts or quotes: build the body in PowerShell and pipe it in:
 
 ```bash
-pwsh -NoProfile -Command '@{ action = "executescript"; tab = "tickets"; script = @"
+pwsh -NoProfile -Command '@{ action = "executescript"; tab = "example"; script = @"
 return [...document.querySelectorAll("table tr")].map(tr => tr.innerText);
 "@ } | ConvertTo-Json -Compress' | $cweb -
 ```
