@@ -56,7 +56,8 @@ Double-click `Update-CWeb.cmd` in the CWeb folder. It:
    have running (if several run, the agent asks you which). Its request shows as a banner on the status page; **Approve** it on the **Access** tab. It keeps working (and reconnecting in later sessions) until you
    **Revoke** it.
 
-That's all. Agents never start, create or delete instances: they work in the one you have running. They can't start
+That's all. Agents work in the instance you have running. If none is running (after a reboot, say), an agent's
+`connect` starts `work`. Agents never create or delete instances, never start one while another runs, can't start
 a second server, can't use another instance without a separate approval, and can't change a tab another agent opened.
 
 ## The status page

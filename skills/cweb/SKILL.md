@@ -30,10 +30,12 @@ command below.
 - `denied`: stop and ask the user.
 - `choose` (exit 6): several instances are running. Ask the user which one they work in, then
   `{{CWEB}}/cweb.sh <instance> support-ticket-triage connect`.
-- `error` with "No CWeb instance is running" or "isn't running": ask the user to start the instance they work in.
+- `waiting` with "is starting": no instance was running, so `connect` started `work`; Chrome is still opening. Run
+  `connect` again.
+- `error` with "isn't running": the instance you named isn't running. Ask the user to start it, or connect without a name.
 
-Never start, create, delete or stop an instance (no `Start-CWeb.cmd`, no status-page actions), and never edit
-`instances.json` or `config.json`: the user decides which instances run.
+When no instance runs, `connect` starts `work` for you. Never create, delete or stop an instance or start one any other
+way (no `Start-CWeb.cmd`, no status-page actions), and never edit `instances.json` or `config.json`.
 
 ## 2. Work in your own tab
 

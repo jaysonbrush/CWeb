@@ -6,13 +6,14 @@
 #
 # Connect-CWeb attaches to the instance the user is working in: the running one (or, if several run, the one this
 # client already has a key for; otherwise it lists them so the agent can ask). With -Instance it attaches to that one,
-# if it's running. It never starts or creates an instance: that's the user's call. It reuses the client's saved key if
+# if it's running. When no instance runs at all (after a reboot, say), it starts the default one, 'work', and attaches
+# to it. It never creates an instance, and never starts one while another runs. It reuses the client's saved key if
 # it still works, and otherwise asks for access and waits for the user to approve it on the status page. The key is
 # saved in <data folder>\<instance>\clients\<client>.key, so later sessions with the same client name connect with no
 # click. Keys are never printed.
 #
-# Run as a script (used by cweb.sh), it prints JSON and exits 0 connected, 3 still waiting, 4 denied, 6 several
-# instances running (pick one), 1 error (e.g. none running):
+# Run as a script (used by cweb.sh), it prints JSON and exits 0 connected, 3 still waiting (for approval, or for the
+# instance it started to open Chrome), 4 denied, 6 several instances running (pick one), 1 error:
 #   pwsh -NoProfile -File CWeb-Client.ps1 -Connect -Client support-ticket-triage [-Instance work]
 
 param(
@@ -52,21 +53,23 @@ function Connect-CWeb {
         [string]$Instance,        # omit: the running instance
         [Parameter(Mandatory)] [string]$Client,
         [int]$WaitSeconds = 90,   # how long this call waits for approval; run it again to keep waiting
-        [switch]$NoStart          # no effect (kept for old scripts): connect never starts an instance
+        [switch]$NoStart          # don't start the default instance when none runs
     )
     $null = Get-CWebClientFiles -Inst ([pscustomobject]@{ ClientsDir = '.' }) -Client $Client   # checks the name
-    $ask = 'Ask the user to start the instance they work in (Start-CWeb.cmd, or Start on its status page). Agents never start or create instances.'
+    $ask = 'Ask the user to start it (Start-CWeb.cmd <instance>, or Start on its status page).'
+    $default = if ('work' -in @((Get-CWebInstanceTable -Root $script:CWebClientRoot).Keys)) { 'work' } else { $null }
+    $running = @(Get-CWebInstanceList -Root $script:CWebClientRoot | Where-Object running)
 
-    # 1. The instance: the one the user has running. Never start one.
+    # 1. The instance: the one the user has running. None at all: the default one ('work'), started below.
     if (-not $Instance) {
-        $running = @(Get-CWebInstanceList -Root $script:CWebClientRoot | Where-Object running)
         if ($running.Count -gt 1) {
             # Several: the one this client already has a key for, if that's just one.
             $mine = @($running | Where-Object { Test-Path (Get-CWebClientFiles -Inst (Get-CWebInstance -Name $_.name -Root $script:CWebClientRoot) -Client $Client).Key })
             if ($mine.Count -eq 1) { $running = $mine }
         }
         if ($running.Count -eq 0) {
-            return [pscustomobject]@{ status = 'error'; instance = $null; client = $Client; message = "No CWeb instance is running. $ask" }
+            if (-not $default) { return [pscustomobject]@{ status = 'error'; instance = $null; client = $Client; message = "No CWeb instance is running, and there's no 'work' instance to start. $ask" } }
+            $running = @([pscustomobject]@{ name = $default })
         }
         if ($running.Count -gt 1) {
             $names = ($running | ForEach-Object { "$($_.name) ($($_.label))" }) -join ', '
@@ -96,7 +99,40 @@ function Connect-CWeb {
         $res
     }
     if (-not (Get-CWebRunningServer -Instance $inst)) {
-        return Result 'error' "CWeb '$($inst.Name)' isn't running. $ask"
+        $later = "CWeb '$($inst.Name)' is starting (Chrome is opening its tabs). Run connect again in a moment."
+        if (Test-CWebServerProcess -Instance $inst) {
+            # Started a moment ago (by the user or another agent) and still opening Chrome: wait for it.
+            if (-not (Wait-CWebServer -Instance $inst -Seconds $WaitSeconds)) {
+                if (Test-CWebServerProcess -Instance $inst) { return Result 'waiting' $later }
+                return Result 'error' "CWeb '$($inst.Name)' stopped while starting. Logs: $($inst.LogDir)"
+            }
+        } elseif ($inst.Name -eq $default -and -not $NoStart) {
+            # Nothing runs at all (after a reboot, say): start the default instance. One agent at a time, and never
+            # while another instance runs.
+            $gate = [System.Threading.Mutex]::new($false, 'Local\CWeb-agent-start')
+            try { $null = $gate.WaitOne(30000) } catch [System.Threading.AbandonedMutexException] { }
+            try {
+                $others = @(Get-CWebInstanceList -Root $script:CWebClientRoot | Where-Object { $_.running -and $_.name -ne $inst.Name })
+                if ($others.Count) { return Result 'error' "CWeb '$($inst.Name)' isn't running, but $(($others | ForEach-Object name) -join ', ') is. Connect to that one, or ask the user to start '$($inst.Name)'." }
+                $proc = $null
+                if (-not (Test-CWebServerProcess -Instance $inst)) {
+                    Write-Host "No CWeb instance is running; starting '$($inst.Name)'."
+                    $proc = Start-CWebServerProcess -Instance $inst -Root $script:CWebClientRoot
+                    $deadline = (Get-Date).AddSeconds(30)   # its server.json appears before Chrome opens
+                    while (-not (Test-CWebServerProcess -Instance $inst) -and -not $proc.HasExited -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+                }
+            } finally { try { $gate.ReleaseMutex() } catch { }; $gate.Dispose() }
+            $st = Wait-CWebServer -Instance $inst -Seconds $WaitSeconds -Process $proc
+            if (-not $st) {
+                # Exit 2: the user's launcher started it at the same moment and holds the lock; that one is starting.
+                if ($proc -and $proc.HasExited -and -not (Test-CWebServerProcess -Instance $inst)) { return Result 'error' "CWeb '$($inst.Name)' didn't start (exit $($proc.ExitCode)). Logs: $($inst.LogDir)" }
+                return Result 'waiting' $later
+            }
+            $inst = Get-CWebInstance -Name $inst.Name -Root $script:CWebClientRoot   # the port it really took
+            $base = "http://127.0.0.1:$($inst.Port)"; $statusUrl = "$base/status#access"
+        } else {
+            return Result 'error' "CWeb '$($inst.Name)' isn't running. $ask"
+        }
     }
 
     # Several sessions of one client share its key file, so another session may write a key at any moment: read it
@@ -183,7 +219,7 @@ function Invoke-CWeb {
     if (-not (Test-Path $files.Key)) { throw "Not connected as '$Client' to CWeb '$($inst.Name)'. Run Connect-CWeb -Instance $($inst.Name) -Client $Client." }
     $key = (Get-Content -LiteralPath $files.Key -Raw).Trim()
     $r = Invoke-CWebHttp POST "http://127.0.0.1:$($inst.Port)/api" $Body @{ 'X-API-Key' = $key } $TimeoutSec
-    if ($r.code -eq 0) { throw "CWeb '$($inst.Name)' isn't answering (stopped?). Ask the user to start it; agents never start instances." }
+    if ($r.code -eq 0) { throw "CWeb '$($inst.Name)' isn't answering (stopped?). Run Connect-CWeb -Client ${Client}; it starts 'work' if no instance runs." }
     if ($r.code -eq 401) { throw "The key for '$Client' was revoked or replaced. Run Connect-CWeb -Instance $($inst.Name) -Client $Client." }
     return $r.json
 }

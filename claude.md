@@ -31,8 +31,8 @@ itself (a short headless start of the `test` instance). Safe to run again; it sk
 - Sign-ins can't be copied between machines (Chrome ties them to the Windows user on that machine): sign in once per
   machine, per instance.
 
-**Rules:** work in the instance the user has running; never start, create, delete or stop an instance, and never
-edit `instances.json` or `config.json` (those are the user's); never write your own page-refresh loop (the keep-alive
+**Rules:** work in the instance the user has running (when none runs, `connect` starts `work` for you); never create,
+delete or stop an instance or start one by hand, and never edit `instances.json` or `config.json` (those are the user's); never write your own page-refresh loop (the keep-alive
 does that properly); never put a key in a file, message or log.
 
 ---
@@ -47,15 +47,18 @@ Use the same name every session; that's what lets you reconnect without asking t
 $CWEB/cweb.sh support-ticket-triage connect
 ```
 
-The reply names the instance (`"instance":"work"`); use that name in every command after it. `connect` never starts
-or creates an instance.
+The reply names the instance (`"instance":"work"`); use that name in every command after it. When no instance is
+running at all (after a reboot, say), `connect` starts `work` and attaches to it. It never creates an instance, and
+never starts one while another runs.
 
 - `"status":"connected"` (exit 0): go ahead.
 - `"status":"choose"` (exit 6): several instances are running (`instances` lists them). Ask the user which one they
   work in, then `$CWEB/cweb.sh <that instance> support-ticket-triage connect`. (If you already have a key for exactly
   one of them, `connect` picks that one by itself.)
-- `"status":"error"` (exit 1) with *"No CWeb instance is running"* or *"isn't running"*: ask the user to start the
-  instance they work in. Don't start one yourself.
+- `"status":"waiting"` (exit 3) with *"is starting"*: `connect` started `work` (or someone else just did) and Chrome
+  is still opening its tabs. Run `connect` again.
+- `"status":"error"` (exit 1) with *"isn't running"*: you named an instance that isn't running (and another one is,
+  or it isn't `work`). Ask the user to start it, or connect without a name.
 - `"status":"waiting"` (exit 3): first time for this name. Tell the user: *"Please approve `support-ticket-triage` on
   &lt;the `statusUrl` from the reply&gt; (Access tab)."* Then run `connect` again; it keeps the same request (it waits 90 s per
   call, because tool calls time out). Don't start anything else meanwhile.
@@ -81,8 +84,8 @@ $c = Connect-CWeb -Client support-ticket-triage     # status connected|waiting|d
 Invoke-CWeb -Instance $c.instance -Client support-ticket-triage @{ action = 'gettitle' }
 ```
 
-**Don't** start `CWeb-Server.ps1`, `Start-CWeb.cmd` or an instance in any other way, and don't use the status page's
-actions (Start, + New, Delete, Stop server): the user decides which instances run.
+**Don't** start `CWeb-Server.ps1`, `Start-CWeb.cmd` or an instance in any other way (`connect` starts `work` when
+nothing runs), and don't use the status page's actions (Start, + New, Delete, Stop server).
 
 ## Sharing one browser
 
@@ -120,8 +123,8 @@ entry wins over a default of the same name.
 | `personal` | 9390 | |
 | `test` | 9399 | Headless; for testing CWeb itself |
 
-- The user starts them: `Start-CWeb.cmd <instance>` (default `work`) or the status page's **Start** button.
-  `connect` only attaches to a running one.
+- The user starts them: `Start-CWeb.cmd <instance>` (default `work`) or the status page's **Start** button. When none
+  runs, an agent's `connect` starts `work`; otherwise it only attaches to a running one.
 - New ones: **+ New** on any status page (next free port from `firstPort`, default 9380).
 - **Delete** (in the **+ New** panel's instance list) asks first, stops the instance if it runs, and takes it off the
   list. Its folder (profile, sign-ins, keys, logs) stays as a leftover profile, so **Restore** brings it back. A
@@ -279,7 +282,7 @@ credentials, no customer data.
 
 ## Starting, stopping, restarting
 
-- **Start** (the user, not agents): `Start-CWeb.cmd <instance>` or the status page's **Start** button. Safe to
+- **Start:** `Start-CWeb.cmd <instance>` or the status page's **Start** button. Safe to
   repeat: one server per instance (a named lock); a second one exits. If the server runs but doesn't answer, the
   launcher waits a minute, then offers to restart it (Chrome closed cleanly first). If its Chrome was closed (window
   closed, or it exited), the server keeps running and the launcher or the status page's **Open Chrome** reopens it;
@@ -364,7 +367,8 @@ CWeb writes nothing outside the data folder and the repo's `browser\` downloads.
 | Symptom | Fix |
 |---|---|
 | `cweb.sh` exit 5 | Not connected, or the key was revoked/replaced: run `connect`. |
-| `connect`: "No CWeb instance is running" / "isn't running" | Ask the user to start the instance they work in. Agents never start one. |
+| `connect`: "is starting" (exit 3) | Chrome is still opening `work`'s tabs: run `connect` again. |
+| `connect`: "isn't running" | The named instance isn't running (another is, or it isn't `work`): ask the user to start it, or connect without a name. |
 | `connect` exit 6, `choose` | Several instances run: ask the user which, then `cweb.sh <instance> <client> connect`. |
 | `connect` keeps saying waiting | The user hasn't approved yet; remind them of the Access tab. Requests expire after an hour; `connect` asks again. |
 | "Tab 'x' belongs to …" | Open your own tab with `newtab`, or ask the owner/the user. |
@@ -382,6 +386,7 @@ CWeb writes nothing outside the data folder and the repo's `browser\` downloads.
 
 | Version | Changes |
 |---|---|
+| 2026.10.28.024 | When no instance is running (after a reboot, say), an agent's `connect` starts `work` and attaches to it, instead of asking the user. It still never creates an instance and never starts one while another runs; one agent starts it at a time. While Chrome opens its tabs `connect` replies `waiting` (exit 3) "is starting": run it again. |
 | 2026.10.28.023 | A closed Chrome no longer breaks the server. Before, once Chrome's window was closed or Chrome exited, every status request failed ("array index evaluated to null"), so the launcher thought the server was down, started a second one that exited at once, and waited 2 minutes. Now the server notices, the status page says so and has **Open Chrome**, and `Start-CWeb` reopens it. `Start-CWeb` also offers to restart a server that runs but doesn't answer (Chrome closed cleanly first), stops waiting at once if a new server exits, and waits up to 6 minutes for Chrome to restore many tabs. `Update-CWeb` stops a server that isn't answering too. Chrome writes only errors to the ChromeDriver log, and the startup file check no longer fills the server log with `Zone.Identifier` errors. |
 | 2026.10.27.022 | ChromeDriver logs warnings and errors only. Every version before logged every command and reply in full (about 1 GB a day per instance); those day files (`chromedriver-<date>.log`) are deleted on the next start. ChromeDriver logs are kept 7 days like the other logs. |
 | 2026.10.27.021 | Clean Chrome shutdown and restart. Stopping (status page, updates) closes Chrome the way its own Exit does and waits until it has exited, so the next start never says Chrome didn't shut down correctly; if ChromeDriver doesn't answer, Chrome is closed over its DevTools port, and `Update-CWeb`'s force-stop closes Chrome cleanly before ending the server. Restarts reopen the last session's tabs and session sign-ins (`--restore-last-session`: Chrome had been resetting the preference CWeb set). Starts wait up to 330 s for ChromeDriver instead of 60 s; a start that still fails closes the Chrome it opened. One ChromeDriver log per start, kept 3 days. |
