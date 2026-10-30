@@ -733,6 +733,7 @@ function Invoke-TabAction {
                     if ($Body.url) { Chrome-Navigate -Browser $script:Browser -Url $Body.url | Out-Null; $script:Frames.Remove($h) }
                     return @{ success = $true; tab = $name; url = $Body.url; existing = $true }
                 }
+                Enter-Tab (Get-WorkTab)   # the new tab opens from the current one, which may have been closed
                 $r = Invoke-BrowserAction -Body @{ action = 'newtab'; url = $Body.url; name = $name }
                 if ($r.success) {
                     $h = $d.CurrentWindowHandle

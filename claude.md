@@ -210,6 +210,7 @@ so agents and the server would see different folders.
 
 | Version | Changes |
 |---|---|
+| 2026.10.30.029 | Opening a new tab, or navigating to a site with no tab yet, works again after the tab CWeb was last on has been closed. |
 | 2026.10.28.028 | One tab per site: `navigate` without `tab` goes to the site's tab (named after the site) and opens one only if there's none, so sessions share it instead of each opening their own. |
 | 2026.10.28.027 | The server log notes refused API requests (no key) and old-style `/attach` handshakes, so a client that can't get in is visible. |
 | 2026.10.28.026 | Keep-alive tabs survive restarts: each is marked (sessionStorage) and found again when Chrome restores it, instead of CWeb opening a second one every restart. |
